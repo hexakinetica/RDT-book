@@ -1,0 +1,711 @@
+\chapter{Anatomy of Motion: From Geometry to Dynamics}
+\label{ch:motion_anatomy}
+
+% "What you will learn" box
+\begin{navigationbox}{In this chapter, you will learn:}
+    \begin{itemize}
+        \item The fundamental difference between \term{Kinematics} (the geometry of motion) and \term{Dynamics} (the physics of motion).
+        \item The purpose and mechanism of \term{Forward Kinematics} (FK): calculating the robot's hand position from its joint angles.
+        \item The critical importance and inherent challenges of \term{Inverse Kinematics} (IK): finding the joint angles needed to reach a desired target.
+        \item The role of the \term{Jacobian Matrix} as the essential bridge between the world of joint velocities and the world of Cartesian velocities.
+        \item How to construct smooth, predictable, and safe movements using trajectories, interpolation, and velocity profiling.
+        \item Why real-world performance depends on understanding the difference between \term{Accuracy} and \term{Repeatability}.
+    \end{itemize}
+\end{navigationbox}
+
+In the previous chapter, we mastered the vocabulary to describe a robot's state in a static snapshot. We can now answer the question, "Where are you?" This chapter teaches us the grammar of action. We will build the bridge from "where" to "how," exploring the geometry and physics that transform a simple target coordinate into a graceful, precise, and controlled movement. We will dissect the robot's motion, starting with its pure geometry and progressively adding the layers of velocity, timing, and finally, the real-world physics of forces and masses.
+
+\section{Kinematics of Position: The Robot's Skeleton}
+\label{sec:position_kinematics}
+
+\term{Kinematics} is the branch of mechanics that describes the motion of bodies without considering the forces or masses that cause the motion. It is the pure geometry of movement. For a robot manipulator, it establishes the mathematical relationship between the configuration of its joints (e.g., the angles of rotation) and the resulting position and orientation of its end-effector (the TCP) in space. Without understanding kinematics, it is impossible to make a robot move in a meaningful way.
+
+Imagine your own arm. Its configuration is defined by the angles in your shoulder, elbow, and wrist. Kinematics allows us to answer two fundamental and opposing questions:
+
+\begin{enumerate}
+    \item "If I bend my joints to these specific angles, where will my fingertip end up?" — This is the \textbf{forward kinematics} problem.
+    \item "To place my fingertip at this exact point in space with a specific orientation, what angles do I need to set for my joints?" — This is the \textbf{inverse kinematics} problem.
+\end{enumerate}
+
+In this section, we will explore both of these critical tasks in detail.
+
+\subsection{Forward Kinematics (FK): The Simple Question}
+
+\term{Forward Kinematics} (FK) solves for the position and orientation of the robot's TCP, given the known values of all its joint variables (angles for rotational joints and displacements for prismatic joints). From a computational standpoint, this is a relatively simple and straightforward problem, but it is absolutely fundamental and serves as the basis for many controller functions.
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram of FK as a "black box"
+    \begin{infobox}{The Essence of Forward Kinematics}
+        A schematic diagram of a robot as a "black box".
+        An arrow labeled "\textbf{INPUT:} Joint Configuration ($q_1, q_2, \dots, q_n$)" points into the box.
+        An arrow labeled "\textbf{OUTPUT:} TCP Pose (X, Y, Z, Rx, Ry, Rz)" points out of the box.
+        Inside the box, the text reads: "Forward Kinematics Solver (FK)".
+    \end{infobox}
+    \caption{The essence of the forward kinematics problem: mapping from joint space to Cartesian space.}
+    \label{fig:fk_essence}
+\end{figure}
+
+\paragraph{The Engineering Purpose of FK} Why does a controller need to constantly solve this problem?
+\begin{itemize}
+    \item \textbf{Visualization and Monitoring:} This is the most obvious application. To display the robot's current position in a 3D scene on the operator's teach pendant or in a simulator, the system constantly reads the actual angles from the joint encoders and solves the FK problem to calculate where the TCP and every other robot link are in space.
+
+    \item \textbf{Safety and Collision Detection:} FK is a critical safety function. The controller can use it to implement "geofencing" by continuously checking if the calculated pose of the TCP (or any other part of the robot) would violate predefined workspace boundaries. It's the core of virtual walls and collision avoidance with static obstacles.
+
+    \item \textbf{Foundation for Inverse Kinematics:} As we will see, many numerical methods for solving the much harder inverse kinematics problem use FK within their iterative loop. At each step, they solve FK to check "how close is my current guess to the desired target?"
+
+    \item \textbf{Translating Taught Positions:} Sometimes, an operator "teaches" a point not by moving the TCP, but by jogging individual joints. To provide feedback, the controller uses FK to immediately calculate and display the Cartesian coordinates that correspond to the manually entered joint angles.
+\end{itemize}
+
+\paragraph{How It Works: A Chain of Transformations}
+For robot manipulators with a serial kinematic chain (where links are connected one after another), the FK problem is solved by sequentially multiplying the homogeneous transformation matrices that we discussed in \Cref{sec:homogeneous_transforms}.
+
+The geometry of each robot link is described by a set of parameters. The most common method is the \term{Denavit-Hartenberg (DH) parameters}, which define the lengths and angles between the joint axes. These four parameters for each link allow the construction of a transformation matrix, $T_{i \leftarrow i-1}(q_i)$, from the coordinate system of the previous link to the current one, as a function of the joint variable $q_i$.
+
+The total transformation matrix from the robot's base (`Base`) to its flange (`Tool`) is then calculated as the product of all these individual link matrices:
+$$ T_{Tool \leftarrow Base} = T_{1 \leftarrow 0}(q_1) \cdot T_{2 \leftarrow 1}(q_2) \cdot \dots \cdot T_{n \leftarrow n-1}(q_n) $$
+
+\begin{tipbox}{Engineering Insight: An Accurate Model is Non-Negotiable}
+The accuracy of the \term{DH parameters} is critically important. The slightest error in these parameters—which describe the physical lengths of the links and the angles between their axes—will lead to a systematic error in the FK calculations. The robot will "think" its hand is in one place, while in reality, it is somewhere else. This is a classic "garbage in, garbage out" problem. This is why the process of \term{kinematic calibration}, which fine-tunes the model's parameters to match the real robot, is often required after manufacturing or major repairs. The model is the map; if the map is wrong, the robot will get lost.
+\end{tipbox}
+
+\subsection{Inverse Kinematics (IK): The Million-Dollar Question}
+\label{sec:ik}
+
+If forward kinematics answers the question, "If I bend my joints this way, where will my hand be?", then \term{Inverse Kinematics} (IK) addresses the far more important and complex question: \textit{To get my hand to this target pose, how must I bend my joints?}"
+
+Formally, IK is the process of determining the set of joint variables $(q_1, q_2, \dots, q_n)$ that will achieve a desired position and orientation (pose) for the TCP in space.
+
+\begin{tipbox}{Key to Meaningful Work}
+Imagine trying to guide a pen along a straight line. You don't think, "I need to bend my elbow by 37 degrees and my shoulder by 15 degrees." You think about the path of the pen's tip. Inverse Kinematics is what allows a robot, like you, to think in terms of the task, not in terms of its own joints. A robot controller continuously solves the IK problem to transform a desired Cartesian path (e.g., a straight welding seam) into a sequence of commands for its motors. Without an effective and reliable IK solver, a robot is just a collection of servo motors. With one, it becomes an intelligent tool capable of working in the 3D world just like a human.
+\end{tipbox}
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram of IK as a "black box", mirroring the FK diagram
+    \begin{infobox}{The Essence of Inverse Kinematics}
+        A schematic diagram of a robot as a "black box," mirroring Figure \ref{fig:fk_essence}.
+        An arrow labeled "\textbf{INPUT:} Desired TCP Pose (X, Y, Z, Rx, Ry, Rz)" points into the box.
+        An arrow labeled "\textbf{OUTPUT:} Joint Configuration ($q_1, q_2, \dots, q_n$)" points out of the box.
+        Inside the box, the text reads: "Inverse Kinematics Solver (IK)".
+    \end{infobox}
+    \caption{The essence of the inverse kinematics problem: mapping from Cartesian space back to joint space.}
+    \label{fig:ik_essence}
+\end{figure}
+
+\paragraph{Why so Difficult?}
+Unlike forward kinematics, which has a single, unique analytical solution, the inverse problem is a source of numerous mathematical and algorithmic complexities.
+
+\begin{enumerate}
+    \item \textbf{Non-Linearity of Equations:} The equations that relate the TCP pose to the joint angles are full of trigonometric functions (sines and cosines). This makes the system of equations highly non-linear. Unlike linear systems, which can be solved with simple matrix methods, non-linear systems require much more complex approaches and do not always have a straightforward analytical solution.
+
+    \item \textbf{Multiple Solutions:} For the same target TCP pose, there can be several—and sometimes many—different possible robot configurations. For a standard 6-axis robot, there can be up to eight or even sixteen distinct joint configurations that all result in the same end-effector pose.
+    
+    \begin{figure}[h!]
+        \centering
+        % Placeholder for a diagram showing multiple IK solutions
+        \begin{infobox}{Example of Multiple IK Solutions}
+            Two schematic diagrams of a robot side-by-side. In both, the robot's TCP is at the exact same point and orientation. On the left, the robot's "elbow" is pointing up (an "Elbow Up" configuration). On the right, the "elbow" is pointing down (an "Elbow Down" configuration). Captions clearly indicate the difference in link positions for the identical tool pose.
+        \end{infobox}
+        \caption{An example of IK solution multiplicity: "Elbow Up" and "Elbow Down" configurations both achieve the same target TCP pose.}
+        \label{fig:ik_multiplicity}
+    \end{figure}
+    
+    The simplest example is the "elbow up" vs. "elbow down" configurations, analogous to how you can reach for an object on a table with your elbow held high or low. The controller must have a strategy for choosing the most appropriate solution, for instance, the one closest to the current configuration (to minimize motion) or the one furthest from singularities and limits.
+
+    \item \textbf{Absence of Solutions (Unreachability):} The target TCP pose might simply be unreachable for the robot. It could be outside its workspace or require an orientation that the robot cannot physically achieve due to its mechanical design. A robust IK solver must be able to correctly detect such cases and report an error, rather than getting stuck in an infinite search for a non-existent solution.
+
+    \item \textbf{Singularities:} As we will discuss later, there are special robot configurations (\term{singularities}) where it loses one or more degrees of freedom in Cartesian space. For example, when the wrist aligns with the elbow. Near these points, the IK solution either does not exist or requires infinitely high joint velocities. The solver must be able to recognize an approach to a singularity and handle it gracefully.
+\end{enumerate}
+
+
+\subsection{A Tale of Two Solvers: Analytical vs. Numerical IK}
+\label{sec:ik_solvers}
+
+So, we have established that the IK problem is complex. There are two fundamentally different approaches to solving it: \textbf{analytical} and \textbf{numerical}. The choice between them is a classic engineering trade-off between speed, accuracy, universality, and development cost.
+
+\paragraph{The Analytical (or Closed-Form) Approach}
+This approach involves deriving exact mathematical formulas that directly relate the TCP pose to the joint angles. Given a pose $(X, Y, Z, R_x, R_y, R_z)$, we derive a set of equations like $q_1 = f_1(X, Y, Z, \dots)$, $q_2 = f_2(X, Y, Z, \dots)$, and so on.
+\begin{itemize}
+    \item \textbf{Analogy:} This is like solving the quadratic equation $ax^2+bx+c=0$. We have the ready-made formula $x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$, into which we simply plug the coefficients and instantly get the exact answer.
+    \item \textbf{Requirements:} Deriving such formulas is only possible for robots with a relatively simple kinematic structure (e.g., most 6-axis robots with a spherical wrist). For robots with complex or custom geometry, or with redundant degrees of freedom, finding an analytical solution can be extremely difficult or impossible.
+    \item \textbf{Result:} If a solution exists, the analytical method finds all possible configurations.
+\end{itemize}
+
+\paragraph{The Numerical (or Iterative) Approach}
+This approach does not attempt to derive an exact formula. Instead, it works as an iterative algorithm that step-by-step brings the robot closer to its goal.
+\begin{enumerate}
+    \item It starts with an initial guess (usually the robot's current configuration).
+    \item Using forward kinematics (FK), it calculates where the TCP is in this configuration.
+    \item It computes the "error"—the difference between the current pose and the target pose.
+    \item Using the Jacobian matrix (which we will discuss next), it calculates the small joint adjustments needed to reduce this error.
+    \item The joints are "rotated" by these small angles, and we get a new configuration.
+    \item The process repeats from step 2 until the error becomes negligibly small.
+\end{enumerate}
+\begin{itemize}
+    \item \textbf{Analogy:} This is like a person trying to find the summit of a hill in a thick fog. They cannot see the summit, but at each step, they determine the direction of the steepest ascent (the gradient) and take a small step in that direction. By repeating this many times, they eventually reach the top.
+    \item \textbf{Requirements:} This method is universal and works for robots with any kinematic structure.
+    \item \textbf{Result:} The numerical method finds only one solution—the one that is "closest" to the initial guess.
+\end{itemize}
+
+\paragraph{Comparison and Selection}
+Both approaches have their own strengths and weaknesses that determine their areas of application.
+
+\renewcommand{\arraystretch}{1.2} % Increase row spacing
+\begin{longtable}{p{0.15\linewidth} p{0.375\linewidth} p{0.375\linewidth}}
+    \caption{Comparison of Analytical and Numerical IK Solution Methods}\label{tab:ik_solver_comparison}\\
+    \toprule % Thick line before the first row (header)
+    \textbf{Criterion} & \textbf{Analytical Approach} & \textbf{Numerical Approach} \\
+    \addlinespace[3pt] % Added space after the header row
+    \toprule % Thick line immediately under the header row
+    \endfirsthead
+
+    \multicolumn{3}{c}{\tablename~\thetable{} -- continued from previous page} \\
+    \toprule % Thick line for continued header
+    \textbf{Criterion} & \textbf{Analytical Approach} & \textbf{Numerical Approach} \\
+    \addlinespace[3pt] % Added space after the header row
+    \toprule % Thick line for continued header
+    \endhead
+
+    \bottomrule % Thick line at the very end of the table
+    \endfoot
+
+    \bottomrule % Thick line for the last page of the table
+    \endlastfoot
+
+    % Table Content
+    \textbf{Speed} & Very high. Requires a fixed, predictable number of mathematical operations. & Lower. Depends on the number of iterations. Can be resource-intensive. \\
+    \midrule % Thin line between data rows
+    \textbf{Accuracy} & Maximum possible (limited only by floating-point precision). & Depends on the stopping criterion. There is always some residual error. \\
+    \midrule % Thin line between data rows
+    \textbf{Universality} & Low. Requires deriving unique formulas for each new robot model. & High. The same algorithm works for robots with any kinematic layout. \\
+    \midrule % Thin line between data rows
+    \textbf{Finding Solutions} & Finds all possible solutions (configurations). & Finds only one solution, the one closest to the initial guess. \\
+    \midrule % Thin line between data rows
+    \textbf{Convergence} & Not applicable (direct calculation). & No 100\% guarantee of convergence. It's possible to converge to a local minimum rather than the global one. \\
+    \midrule % Thin line between data rows
+    \textbf{Development Complexity} & Very high. Deriving the analytical formulas is a laborious and complex mathematical process. & Relatively low. Developing and debugging a universal numerical solver is simpler than deriving formulas for each robot. \\
+\end{longtable}
+
+\begin{tipbox}{Engineering Insight: Why Complex Systems Often Prefer Numerical Methods}
+Despite the obvious advantages of the analytical approach (speed, accuracy), modern flexible control systems often favor numerical methods for two main reasons:
+\begin{enumerate}
+    \item \textbf{Universality and Extensibility:} Developing one good numerical solver allows for the future support of many different robots without the need to derive new, complex formulas for each one.
+    \item \textbf{Handling Constraints:} It is much easier to integrate additional constraints into numerical algorithms (e.g., avoiding singularities, keeping joints within their limits), which makes them more flexible in practice.
+\end{enumerate}
+However, if a reliable and fast analytical solution exists for your specific robot, it will almost always be the preferred choice for tasks requiring maximum performance. In our project, we will rely on concepts underlying numerical solvers, as they better illustrate general principles and are more universal.
+\end{tipbox}
+
+\section{Kinematics of Velocity: The Bridge Between Worlds}
+\label{sec:velocity_kinematics}
+
+So far, we have only talked about positions and poses: where the robot is now and where it needs to be. But for motion control, it is equally important to talk about \textbf{velocities}. How is the rotational speed of the robot's individual motors related to the linear and angular velocity of its tool (TCP) in Cartesian space? The answer to this question is provided by the \term{Jacobian Matrix}, or simply, the Jacobian.
+
+If kinematics of position is about the robot's skeleton, the kinematics of velocity is about its nervous system, translating high-level speed commands into low-level motor actions. The Jacobian is the fundamental tool in robotics that allows us to look into the "differential" nature of motion.
+
+\subsection{The Jacobian Matrix: The Missing Link}
+
+The Jacobian acts as a "translator" or a "bridge" between the world of joint velocities and the world of TCP velocities.
+
+\paragraph{Conceptual Explanation: The Coefficients of Influence}
+Imagine a 6-axis robot. Rotating the first joint (the base) will cause the TCP to move in a large circle in a horizontal plane. Rotating one of the wrist joints, on the other hand, will primarily cause an angular rotation of the TCP, with very little change to its linear position. A rotation of the "elbow" joint will cause a complex motion of the TCP, both along an arc and with a change in orientation.
+
+The Jacobian matrix is precisely what describes these dependencies. In essence, it is a table of "influence coefficients" that answers the question: **"What contribution does the rotational speed of each individual joint make to each of the six components of the TCP's velocity (three linear and three angular)?"**
+
+\begin{tipbox}{Jacobian is Not Constant}
+It is crucial to understand that, unlike the DH-parameters, the Jacobian is \textbf{not constant}. Its values depend on the robot's current configuration ($q$). The contribution of the same joint to the TCP's velocity will be completely different when the robot is fully extended versus when it is folded up. The Jacobian describes the instantaneous relationship between velocities at a specific configuration.
+\end{tipbox}
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram illustrating the Jacobian concept
+    \begin{infobox}{The Jacobian Connects Joint and TCP Velocities}
+        A schematic drawing of a robot (e.g., a side view of the first three links). A rotation of one joint (e.g., the elbow) with an angular velocity $\dot{q}_2$ is shown. From the TCP, vectors for linear velocity $\vec{v}$ and angular velocity $\vec{\omega}$ are drawn. Arrows indicate that the rotation $\dot{q}_2$ is the cause of components in both $\vec{v}$ and $\vec{\omega}$.
+    \end{infobox}
+    \caption{The Jacobian matrix relates the rotational velocity of a joint ($\dot{q}_i$) to the resulting linear ($\vec{v}$) and angular ($\vec{\omega}$) velocity of the TCP.}
+    \label{fig:jacobian_concept}
+\end{figure}
+
+\paragraph{Mathematical Formulation}
+Mathematically, this relationship is expressed very elegantly. If we have a vector of joint velocities $\dot{\vec{q}} = (\dot{q}_1, \dot{q}_2, \dots, \dot{q}_n)^T$ and a vector of the TCP's Cartesian velocities (also known as a "twist"), consisting of its linear velocity $\vec{v}$ and angular velocity $\vec{\omega}$, then they are related through the Jacobian matrix $J(q)$:
+
+$$
+\begin{pmatrix} \vec{v}_{TCP} \\ \vec{\omega}_{TCP} \end{pmatrix} = J(q) \cdot \dot{\vec{q}}
+$$
+
+\vspace{3pt}
+For a 6-axis robot, the Jacobian is a 6x6 matrix. Knowing the speeds of all the motors, we can instantly calculate the linear and angular velocity with which the tool is moving. And conversely, if we want the tool to move with a specific velocity, we can find the required motor speeds by solving this system of equations for $\dot{\vec{q}}$:
+
+$$
+\dot{\vec{q}} = J(q)^{-1} \cdot \begin{pmatrix} \vec{v}_{TCP} \\ \vec{\omega}_{TCP} \end{pmatrix}
+$$
+
+\paragraph{Practical Application of the Jacobian}
+The Jacobian is not just a theoretical construct but a working tool that is used in the controller to solve a multitude of practical problems.
+
+\begin{itemize}
+    \item \textbf{Velocity Control in Cartesian Space:} This is its primary application. When a robot needs to move along a straight line at a constant speed of 100 mm/s, the controller continuously uses the inverse Jacobian ($J^{-1}$) to calculate what speeds need to be maintained on each of the six motors to achieve the desired TCP velocity. This is the basis for motion types like LIN and CIRC.
+
+    \item \textbf{Singularity Analysis:} As we can see from the formula above, to control velocity, we need to compute the inverse of the Jacobian matrix ($J^{-1}$). In singular configurations, the Jacobian matrix becomes \textbf{degenerate}—its determinant is zero, and its inverse does not exist. This is the mathematical manifestation of the fact that the robot loses a degree of freedom at that point. Analysis of the Jacobian allows the controller to "see" an approaching singularity in advance and take measures to avoid it.
+
+    \item \textbf{Force-Torque Control:} There is also a relationship between the torques $(\vec{\tau})$ at the joints and the force $(\vec{F})$ applied to the TCP. This relationship is described by the transposed Jacobian: $\vec{\tau} = J(q)^T \cdot \vec{F}$. This allows the robot to perform tasks that require force control, such as polishing a surface with constant pressure or screwing in a bolt with a specific torque.
+
+    \item \textbf{Numerical IK Solving:} The Jacobian is the heart of most iterative methods for solving inverse kinematics. At each step, it is the Jacobian that tells the algorithm how to adjust the joint angles to get closer to the target.
+\end{itemize}
+
+\begin{tipbox}{From Positions to Velocities}
+If kinematics of position deals with the geometry of poses, then the Jacobian deals with the geometry of velocities and small displacements. It allows us to peek into the "differential" nature of motion and is one of the most powerful analytical tools in the arsenal of a robotics engineer. Understanding the Jacobian is the key to understanding how a robot can move not just to a point, but with a specified speed and in a controlled manner.
+\end{tipbox}
+
+\section{The Art of Motion: Trajectories and Interpolation}
+\label{sec:art_of_motion}
+
+Simply moving a robot from point A to point B is not enough. How it gets there is critically important. Should it move in a straight line? Or is it more important to get to the destination as quickly as possible, regardless of the path's shape? Should it move along a circular arc or a smooth curve?
+
+The answers to these questions define the type of motion. Industrial controllers typically support several main types (or modes) of motion, each designed for its own set of tasks. The process of generating a path between points is called \textbf{trajectory planning}, and the process of calculating the intermediate points on this path is called \textbf{interpolation}.
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram showing PTP vs LIN paths
+    \begin{infobox}{The Difference in TCP Path for Linear (LIN) and Joint (PTP) Motion}
+        An image showing two points in space, A and B. Two different TCP paths are drawn between them:
+        \begin{itemize}
+            \item A straight line, labeled "LIN (Linear Motion)".
+            \item A smooth, curved arc, labeled "PTP (Point-to-Point Motion)".
+        \end{itemize}
+        A note indicates that the TCP path for PTP motion is generally unpredictable.
+    \end{infobox}
+    \caption{The difference in the TCP's path for linear (LIN) and joint (PTP) motion.}
+    \label{fig:ptp_vs_lin}
+\end{figure}
+
+\subsection{Types of Robot Motion}
+Let's review the main types of motion that are standard in the industry.
+
+\begin{enumerate}
+    \item \textbf{Joint Space Motion (PTP / Joint Movement):} This is the most basic, fastest, and most energy-efficient type of motion.
+    \begin{itemize}
+        \item \textbf{The Gist:} The controller receives a start and end configuration for the joints. It performs interpolation directly in joint space, meaning it smoothly changes the angle of each joint from its initial to its final value. All joints start and stop moving simultaneously.
+        \item \textbf{TCP Trajectory:} Because the interpolation happens in joint space, the path that the TCP describes in Cartesian space is a complex curve and is generally unpredictable.
+        \item \textbf{System Requirements:} This mode does not require continuously solving the complex IK problem during motion. IK might be solved only once for the endpoint if it's specified in Cartesian coordinates.
+        \item \textbf{Application:} Used for fast "air moves" between operations where the path shape is not important, e.g., moving the tool from a workbench to a conveyor. The main goal is speed. This is often called PTP (Point-to-Point) motion.
+    \end{itemize}
+
+    \item \textbf{Linear Motion (LIN / Linear Movement):} This is one of the most in-demand motion types for technological operations.
+    \begin{itemize}
+        \item \textbf{The Gist:} The robot's TCP moves along a perfectly straight line from the start point to the end point. The tool's orientation can also change linearly (using SLERP interpolation of quaternions).
+        \item \textbf{TCP Trajectory:} Completely predictable—it is a straight-line segment.
+        \item \textbf{System Requirements:} This mode is very demanding on computational resources. To keep the TCP on a straight line, the controller must solve the inverse kinematics (IK) problem for the next point on the line in every single RT-cycle.
+        \item \textbf{Application:} Any task requiring a straight-line tool path: welding a straight seam, applying a sealant, laser cutting, or approaching an object directly.
+    \end{itemize}
+    
+    \item \textbf{Circular Motion (CIRC / Circular Movement):} This is a variant of Cartesian motion for operations along a circular arc.
+    \begin{itemize}
+        \item \textbf{The Gist:} The robot is given three points: a start, end, and an intermediate (via) point through which the arc must pass. The controller calculates the parameters of the circle and generates the TCP trajectory along it.
+        \item \textbf{System Requirements:} Like LIN motion, it requires continuous IK solving in the RT-cycle.
+        \item \textbf{Application:} Welding circular seams, processing fillets, or applying glue around a circular path.
+    \end{itemize}
+    
+    \item \textbf{Spline Motion (SPLINE / Spline Movement):} This is the most complex and flexible motion type, used for traversing smooth, complex curves.
+    \begin{itemize}
+        \item \textbf{The Gist:} The trajectory is defined by a set of control points, through which the controller constructs a mathematically smooth curve (e.g., a B-spline or NURBS). The robot moves along this curve, ensuring continuity of not only position but also velocity and sometimes acceleration.
+        \item \textbf{System Requirements:} Requires very complex planning algorithms and continuous IK solving.
+        \item \textbf{Application:} High-quality surface finishing, polishing, painting complex contours (e.g., a car body), where maximum smoothness of motion is critical.
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Interpolation: Constructing the Path Between Points}
+\label{sec:interpolation}
+So, we have chosen a motion type, for example, linear (LIN). This means we have defined the geometric shape of the path—in this case, a straight-line segment. The next task for the planner is to discretize this geometric path into a sequence of intermediate points that the robot must pass through in each RT-cycle. This process of calculating intermediate values on a trajectory is called \textbf{interpolation}.
+
+Interpolation can be applied in Cartesian space (for LIN, CIRC, SPLINE motions) as well as in joint space (for PTP motions). The methods are similar in both cases.
+
+\paragraph{The Quality Criterion: Trajectory Smoothness}
+The main difference between interpolation methods lies in the level of smoothness (continuity) of the trajectory they provide. In mathematics, this is described by classes of continuity:
+\begin{itemize}
+    \item \textbf{C⁰ (Positional Continuity):} The path itself has no breaks, but its velocity can change instantaneously (in a jump). This leads to jerky movements.
+    \item \textbf{C¹ (Velocity Continuity):} Both position and velocity are continuous along the trajectory. The velocity changes smoothly, but the acceleration can still jump. The motion appears much smoother.
+    \item \textbf{C² (Acceleration Continuity):} Position, velocity, and acceleration are all continuous. This provides very smooth motion, as even the rate of velocity change is smooth. This minimizes \term{jerk}.
+\end{itemize}
+
+\paragraph{Primary Interpolation Methods}
+\begin{enumerate}
+    \item \textbf{Linear Interpolation:} The simplest method. An intermediate point is calculated by linearly blending the start and end points. For the path, this yields a straight line. This method only provides C⁰ continuity. At the points where trajectory segments join, the velocity changes abruptly, leading to theoretically infinite acceleration and jerk. In practice, this causes vibrations and mechanical shock.
+
+    \item \textbf{Polynomial Interpolation:} To achieve greater smoothness, a polynomial is used instead of a straight line.
+    \begin{itemize}
+        \item \textbf{3rd-order (Cubic) Polynomial:} Allows specifying not only the start and end positions but also the start and end velocities. This provides C¹ smoothness—the velocity at the segment joints will be continuous.
+        \item \textbf{5th-order Polynomial:} Allows specifying position, velocity, and acceleration at the start and end points. This ensures C² smoothness—both velocity and acceleration will be continuous at the joints, which minimizes jerk.
+    \end{itemize}
+
+    \item \textbf{Spline Interpolation:} For constructing long and complex trajectories that pass through many points, splines are used. A spline is a piecewise polynomial function. The trajectory is "stitched" together from several polynomial segments (e.g., cubic) in such a way that a desired level of smoothness (C¹ or C²) is ensured at their connection points ("knots"). The most popular types are B-splines and NURBS (Non-Uniform Rational B-Splines), which offer tremendous flexibility in controlling the shape and smoothness of the curve.
+\end{enumerate}
+
+\begin{tipbox}{Trade-off Between Smoothness and Complexity}
+The choice of interpolation method is always a compromise between the required smoothness of motion and the computational complexity of the algorithm. For fast PTP moves, cubic interpolation is often sufficient. For high-precision surface machining, however, complex splines are indispensable.
+\end{tipbox}
+
+% Section 4.3.4
+\subsection{Velocity Profiling: How a Robot Ramps Up and Down}
+\label{sec:velocity_profiling}
+
+We have defined the geometric path along which the robot should move (e.g., a straight line or an arc). But we still haven't answered the question: at what speed should it move at any given moment in time?
+
+A robot, like any physical object with mass, cannot instantly reach its cruising speed, nor can it stop instantaneously. It needs time to accelerate and decelerate. A \term{Velocity Profile} is the law that describes exactly how the robot's speed changes over time along the entire trajectory. The task of the planner is not just to guide the robot along a path, but to impose a velocity profile on this path that respects the robot's physical limitations on acceleration and jerk.
+
+\paragraph{1. The Trapezoidal Velocity Profile}
+This is the most common and simple profile to implement. Its velocity graph has the shape of a trapezoid, hence the name. It consists of three distinct phases:
+\begin{enumerate}
+    \item \textbf{Acceleration Phase (Constant Acceleration):} The robot starts moving and linearly increases its speed up to the specified maximum value. The acceleration in this phase is constant and positive.
+    \item \textbf{Constant Velocity Phase:} The robot moves at its maximum (cruising) speed. The acceleration is zero.
+    \item \textbf{Deceleration Phase (Constant Deceleration):} The robot linearly decreases its speed to zero just before reaching the end point. The acceleration is constant and negative.
+\end{enumerate}
+
+\begin{dangerbox}{The Problem with the Trapezoidal Profile: Infinite Jerk}
+Let's look at the acceleration graph. At the beginning and end of each phase, it changes \textbf{instantaneously}, in a jump (e.g., from zero to maximum, and then back to zero). Mathematically, this means that the \term{Jerk}, which is the derivative of acceleration, tends to infinity at these moments. Physically, this is equivalent to a \textbf{shock} or an impact. Although the robot is not colliding with anything, its mechanics and drives experience impact loads at the moments of acceleration start, transition to constant velocity, and start of deceleration.
+\end{dangerbox}
+
+\paragraph{2. The S-Curve Velocity Profile (Jerk-Limited)}
+To solve the problem of infinite jerk and make the motion smoother, the S-Curve profile is used. Its velocity graph resembles the letter 'S'.
+
+Unlike the trapezoidal profile, here the acceleration does not change in a jump but ramps up and down smoothly. This is achieved by introducing additional phases where it is the acceleration that changes, not the velocity. As a result, the acceleration graph takes on a trapezoidal shape, and the jerk graph becomes rectangular (i.e., the jerk is limited and constant during the periods of acceleration change).
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram comparing Trapezoidal and S-Curve profiles
+    \begin{infobox}{Comparison of Trapezoidal and S-Curve Profiles}
+        Comparative graphs for the two profiles. Two columns: "Trapezoidal Profile" and "S-Curve Profile". Each column contains three graphs stacked vertically: Velocity(t), Acceleration(t), and Jerk(t).
+        \begin{itemize}
+            \item \textbf{Trapezoidal:} Velocity is a trapezoid. Acceleration consists of rectangular pulses. Jerk shows infinite spikes (up/down arrows) at the points of discontinuity in acceleration.
+            \item \textbf{S-Curve:} Velocity is a smooth S-curve. Acceleration is a trapezoid. Jerk consists of rectangular pulses of finite height.
+        \end{itemize}
+    \end{infobox}
+    \caption{Comparison of Trapezoidal and S-Curve velocity profiles. The S-Curve profile eliminates infinite jerk, resulting in much smoother motion.}
+    \label{fig:velocity_profiles}
+\end{figure}
+
+\paragraph{The Importance of Jerk Control}
+At first glance, the difference may seem insignificant. But in practice, jerk control is critically important.
+\begin{itemize}
+    \item \textbf{Vibration Reduction:} Smoothly changing acceleration (limited jerk) significantly reduces vibrations and oscillations in the robot's structure. This directly impacts positioning accuracy, especially at the end of a movement.
+    \item \textbf{Increased Mechanical Lifespan:} The absence of shock loads reduces wear and tear on gearboxes, bearings, and other mechanical components.
+    \item \textbf{Quality of the Technological Process:} For tasks like transporting liquids, working with fragile objects, or applying coatings, the smoothness of motion is a key requirement.
+\end{itemize}
+
+\begin{tipbox}{Standard for Quality}
+The choice of velocity profile is a trade-off. The trapezoidal profile is simpler to calculate and allows reaching the goal slightly faster (as maximum acceleration is reached quicker). The S-curve profile requires more complex calculations but provides incomparably higher quality and safety of motion. In modern industrial controllers, the S-curve profile is the standard for most tasks.
+\end{tipbox}
+
+
+%==================== Section 4.4 (NEW)=====================
+\section{Boundaries of Possibility: Constraints and Safety}
+\label{sec:constraints_and_safety}
+
+An industrial robot, despite its power and flexibility, is a physical object. It is bound by the laws of mechanics; its components have finite strength, and its motors have finite power. Ignoring these constraints is a recipe not only for inaccurate task execution but also for serious mechanical failures, accidents, and a direct threat to personnel safety.
+
+Therefore, any professional control system must not only generate trajectories but also strictly control them to ensure they are physically achievable for the robot. This section will explore the types of constraints that exist and how the system ensures safe operation within these boundaries.
+
+% Section 4.4.1 (NEW)
+\subsection{Physical Constraints of the Robot}
+\label{sec:physical_constraints}
+
+Every component of the robot—from the joints to the end-effector—has its own operational limits. The task of the trajectory planner and the motion control core is to be aware of these limits and never exceed them. Let's examine the main types of constraints.
+
+\renewcommand{\arraystretch}{1.2} % Increase row spacing
+\begin{longtable}{p{0.15\linewidth} p{0.375\linewidth} p{0.375\linewidth}}
+    \caption{Types of Physical Constraints and Their Significance}\label{tab:physical_constraints}\\
+    \toprule % Thick line before the first row (header)
+    \textbf{Constraint} & \textbf{Physical Meaning \& Source} & \textbf{Consequence of Violation} \\
+    \addlinespace[3pt] % Added space after the header row
+    \toprule % Thick line immediately under the header row
+    \endfirsthead
+
+    \multicolumn{3}{c}{\tablename~\thetable{} -- continued from previous page} \\
+    \toprule % Thick line for continued header
+    \textbf{Constraint} & \textbf{Physical Meaning \& Source} & \textbf{Consequence of Violation} \\
+    \addlinespace[3pt] % Added space after the header row for continued tables
+    \toprule % Thick line for continued header
+    \endhead
+
+    \bottomrule % Thick line at the very end of the table
+    \endfoot
+
+    \bottomrule % Thick line for the last page of the table
+    \endlastfoot
+
+    % Table Content
+    \textbf{Joint Limits} &
+    The maximum and minimum rotation angle (or displacement) for each joint.
+    \textit{Source:} Determined by the robot's mechanical design, physical hard stops, and the length and flexibility of internal cables. &
+    A physical impact with the mechanical stop. This can damage the gearbox, the joint itself, or tear internal cabling. \\
+    \midrule % Thin line between data rows
+    \textbf{Velocity Limits} &
+    The maximum permissible speed for each joint and for the TCP (both linear and angular).
+    \textit{Source:} Limited by the maximum rotational speed of the servo motors, gearbox characteristics, and the cooling system. &
+    Overheating of motors, increased mechanical wear, loss of trajectory tracking accuracy. In the worst case, a drive fault leading to an emergency stop. \\
+    \midrule % Thin line between data rows
+    \textbf{Acceleration Limits} &
+    The maximum permissible acceleration for each joint and for the TCP.
+    \textit{Source:} Depends on the inertial properties of the links and the payload (the heavier the tool, the slower it must accelerate), as well as the maximum torque the motors can develop. &
+    Overloading of motors and gearboxes, strong vibrations in the structure, missed steps (for stepper motors), or loss of tracking (for servo drives). \\
+    \midrule % Thin line between data rows
+    \textbf{Jerk Limits} &
+    The maximum permissible rate of change of acceleration. Jerk is what we perceive as the "smoothness" or "sharpness" of a motion.
+    \textit{Source:} Not a hard physical limit, but rather a requirement for motion quality. High jerk is an impact load. &
+    Strong vibrations that degrade accuracy and can damage sensitive equipment (like a camera on the tool). Increased mechanical wear. Discomfort for the process (e.g., splashing liquids). \\
+    \midrule % Thin line between data rows
+    \textbf{Torque/Force Limits} &
+    The maximum torque that a joint drive can develop, or the maximum force that can be applied at the TCP.
+    \textit{Source:} Determined by the characteristics of the motor, gearbox, and the structural strength of the components. &
+    Tripping of the drive's protection mechanisms, overheating, or physical damage to the gearbox or robot links. \\
+    \midrule % Thin line between data rows
+    \textbf{Workspace Limits} &
+    The geometric region in which the robot's TCP can be located.
+    \textit{Source:} A consequence of the combination of the robot's link lengths and its joint limits. &
+    An attempt to move to an unreachable point, which results in a planner error or unpredictable behavior at the edge of the workspace. \\
+\end{longtable}
+
+\begin{tipbox}{Engineering Insight: Interconnected Constraints}
+All of these constraints are interconnected and must be considered as a whole. For example, the maximum achievable acceleration depends directly on the mass of the tool and payload. This is why industrial controllers always provide a way to define the payload parameters, so the system can automatically adjust its dynamic limits. The job of the trajectory planner is to generate a path and a velocity profile that satisfy \textbf{all} of these constraints simultaneously. This ensures that the motion is not only accurate but also safe for both the robot and its environment.
+\end{tipbox}
+
+% Section 4.4.2 (NEW)
+\subsection{Singularities: The "Dead Zones" of Configuration}
+\label{sec:singularities}
+
+In addition to physical constraints related to strength and power, robot manipulators also have purely geometric "peculiarities"—special configurations in which they lose their mobility. These configurations are called \term{singularities}.
+
+In a singular configuration, the robot loses the ability to move in one or more directions in Cartesian space. Simply put, there are positions of the arm from which it's impossible to move the tool in a certain direction, no matter how fast you spin the motors. These are the "dead zones" of motion.
+
+\paragraph{The Connection to the Jacobian}
+Mathematically, a singularity is a robot configuration in which the Jacobian matrix becomes \textbf{degenerate} (its determinant is zero). As we recall from \Cref{sec:velocity\_kinematics}, to calculate the joint velocities $\dot{\vec{q}}$, we need to find the inverse of the Jacobian, $J^{-1}$. If the matrix is degenerate, its inverse does not exist.
+
+Physically, this means that to create even a small TCP velocity in a certain "problematic" direction, infinitely high joint rotation speeds would be required, which is, of course, impossible.
+
+\paragraph{Typical Singularities of a 6-Axis Robot}
+For a standard 6-axis manipulator, three main types of singularities are typically identified.
+
+\begin{enumerate}
+    \item \textbf{Wrist Singularity:} Occurs when the axes of the fourth (J4) and sixth (J6) joints coincide (become collinear). In this configuration, the two joints try to perform the same job—rotating the tool around its own axis. The robot loses one degree of rotational freedom and cannot independently rotate the tool around all three axes. This is the most common singularity encountered when performing tasks that require large changes in orientation.
+
+    \item \textbf{Elbow Singularity:} Occurs when the robot's arm is fully straightened, and the second and third links form a straight line. In this position, the robot reaches the maximum radius of its workspace. From this point, it cannot move the TCP further away from itself in a straight line. Any attempt to do so would require "folding" the elbow, meaning the motion would no longer be along the radius.
+
+    \item \textbf{Shoulder Singularity:} Occurs when the center of the robot's wrist (the point where the axes of the last three joints intersect) lies on the same vertical line as the axis of rotation of the first, base joint. In this configuration, the robot cannot move its wrist in a certain direction, as it would require a simultaneous motion of both the shoulder and the base, which conflict with each other in this specific point.
+\end{enumerate}
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram showing the three main types of singularities
+    \begin{infobox}{Common Singularity Types for a 6-Axis Manipulator}
+        An illustration of three singularity types with schematic drawings of a 6-axis robot.
+        \begin{itemize}
+            \item \textbf{Wrist Singularity:} Shows the robot where the axes of joints 4 and 6 have aligned (become parallel). Caption: "Axes J4 and J6 are parallel."
+            \item \textbf{Shoulder Singularity:} Shows the robot where the center of the wrist (the intersection point of axes J4, J5, J6) lies on the same vertical line as the axis of rotation of the first joint (J1). Caption: "Wrist center is on the J1 axis."
+            \item \textbf{Elbow Singularity:} Shows the robot with its "arm" fully extended, where the second and third links form a straight line. Caption: "Links J2 and J3 are fully extended."
+        \end{itemize}
+    \end{infobox}
+    \caption{The three primary types of singularities for a 6-axis manipulator.}
+    \label{fig:singularity_types}
+\end{figure}
+
+\begin{dangerbox}{DANGER: Why Singularities are Dangerous}
+Motion \textit{near} a singularity is just as dangerous as passing through it. As the robot approaches a singular configuration, the required velocities of some joints start to increase dramatically. If the trajectory planner does not account for this, it can generate a command that requires one of the motors to rotate at a speed tens of times higher than its physical limit. This will lead to an emergency stop, strong vibrations, and potential damage to the robot.
+\end{dangerbox}
+
+\paragraph{Methods for Avoiding and Handling Singularities}
+A professional controller must know how to work with singularities. Various strategies are used for this:
+\begin{itemize}
+    \item \textbf{Detection and Avoidance:} The trajectory planner analyzes the future path, and if it passes too close to a singular point, it tries to alter it—for example, by slightly changing the tool's orientation.
+    \item \textbf{Configuration Change:} If there are multiple IK solutions for a target point (e.g., "elbow up" and "elbow down"), the controller can automatically switch to the configuration that is further away from a singularity.
+    \item \textbf{Damped Least Squares (DLS) in IK:} This is a mathematical method used in numerical IK solvers. When the robot approaches a singularity, this method artificially "damps" the motion in the problematic direction, sacrificing trajectory tracking accuracy but avoiding infinite joint velocities. The robot will slightly deviate from the commanded path but will not break.
+    \item \textbf{Warning and Stoppage:} In the simplest cases, if avoiding the singularity is impossible, the system should issue a clear warning to the operator and stop the program execution before reaching the dangerous point.
+\end{itemize}
+
+
+
+% Section 4.5
+\section{Beyond Geometry: An Introduction to Dynamics}
+\label{sec:dynamics}
+
+So far, we have been talking about motion in terms of geometry—trajectories, positions, velocities, accelerations. This is the world of \term{kinematics}. Kinematics answers the question, "How does the body move?", but it completely ignores the question, "Why does it move that way?". It does not account for the masses, forces, or torques required to create this motion.
+
+This is where \term{dynamics} comes in. Dynamics is the branch of mechanics that studies the motion of bodies under the action of applied forces. It relates the accelerations of the robot's links to the torques that its motors must develop to create these accelerations, taking into account masses, inertia, and external forces.
+
+\begin{tipbox}{Kinematics vs. Dynamics: The Key Difference}
+\begin{itemize}
+    \item \textbf{Kinematics} is the road map. It shows how to get from point A to point B.
+    \item \textbf{Dynamics} is the physics of the car. It tells you what engine power you need to climb a hill on this route, how much fuel will be consumed, and whether the car will tip over on a sharp turn.
+\end{itemize}
+\end{tipbox}
+
+\paragraph{Why Do We Need Dynamics if We Have Powerful Servos?}
+At first glance, it might seem that if a robot has powerful motors with a large torque reserve, one could neglect complex dynamic calculations. After all, the servo drive with its internal feedback loop will try its best to follow the given trajectory. In most simple cases, this is indeed true. But for high-performance and precision systems, considering dynamics becomes critically important for several reasons:
+
+\begin{enumerate}
+    \item \textbf{Calculating Required Torques (Feed-forward Control):} Instead of forcing the drive's PID controller to "blindly" fight against inertia and gravity, we can pre-calculate exactly what torque the motor will need at any given moment and proactively feed this value to the drive. This significantly reduces the tracking error and allows for faster and more precise movements.
+
+    \item \textbf{Motion Planning with Load Awareness:} A dynamic model allows the planner to generate trajectories that are feasible for a robot with a specific tool and payload. The planner will know that it needs to accelerate more slowly with a heavy part.
+
+    \item \textbf{Force Control with Feedback:} For tasks requiring control of the interaction force with the environment (polishing, assembly with a press-fit), the dynamic model allows separating the torques needed to overcome inertia and gravity from the torques arising from contact with the external world.
+
+    \item \textbf{Accurate Modeling and Digital Twins:} Creating a high-fidelity digital twin of a robot, whose behavior is identical to the real one, is impossible without a complete dynamic model. This is necessary for offline programming and simulation of complex technological processes.
+
+    \item \textbf{Compensation of Disturbances:} A dynamic model allows for active compensation of predictable disturbances, such as the force of gravity (which acts differently on the joints in different configurations) or Coriolis forces (which arise during the simultaneous rotation of several links).
+\end{enumerate}
+
+\paragraph{The Equation of Motion for a Manipulator}
+In general form, the equation describing the dynamics of a robot looks like this:
+$$ M(q)\ddot{q} + C(q, \dot{q})\dot{q} + G(q) + F(\dot{q}) = \tau $$
+Let's break down its components conceptually:
+\begin{itemize}
+    \item $M(q)\ddot{q}$ — \textbf{Inertial forces.} This is the main term of the equation. $M(q)$ is the mass matrix (or inertia matrix), which depends on the robot's configuration $q$. It shows how "hard" it is to accelerate the robot in a given pose. $\ddot{q}$ is the vector of joint accelerations.
+    \item $C(q, \dot{q})\dot{q}$ — \textbf{Coriolis and centrifugal forces.} These forces arise from the rotation of the links. They depend on both the position $q$ and the velocities $\dot{q}$. At low speeds, their influence is small, but during fast movements, they become significant.
+    \item $G(q)$ — \textbf{Gravitational forces.} This is the vector of torques that the motors must apply just to hold the robot's arm in the current position $q$, counteracting the force of gravity.
+    \item $F(\dot{q})$ — \textbf{Frictional forces.} These describe the friction in the joints, which depends on the velocity $\dot{q}$.
+    \item $\tau$ — \textbf{Torques at the drives.} This is the resulting vector of torques that the motors must develop for all this motion to take place.
+\end{itemize}
+
+\begin{tipbox}{Engineering Insight: Why 99\% of Controllers Manage with Just Kinematics}
+The development and, more importantly, the precise identification of parameters for a full dynamic model (masses, centers of gravity, inertia tensors of each link) is an extremely complex and expensive task. For most standard tasks (welding, pick-and-place), it is sufficient to have:
+\begin{itemize}
+    \item Powerful servo drives with fast local control loops.
+    \item A large torque margin in the motors.
+    \item Limited speeds and accelerations, where complex dynamic effects (like Coriolis forces) are not so significant.
+\end{itemize}
+Under these conditions, the PID regulators of the drives can handle the compensation of dynamics "on the fly." However, as soon as we move to high-performance machining or force-torque control tasks, an explicit consideration of dynamics becomes unavoidable.
+\end{tipbox}
+
+% Section 4.5
+\section{Chasing Microns: Metrology and Precision in Robotics}
+\label{sec:metrology}
+
+In the specifications of any industrial robot, you will find impressive numbers: repeatability of ±0.02 mm, positioning accuracy... But what do these numbers actually mean? And why can a robot with stated high repeatability systematically miss its target by a whole millimeter?
+
+The answers to these questions are provided by \term{metrology}—the science of measurement, methods and means of ensuring its unity, and ways of achieving the required accuracy. For a robotics engineer, understanding the basics of metrology is critically important, as it allows for the correct interpretation of robot characteristics and the ability to combat its imperfections.
+
+% Section 4.5.1
+\subsection{Accuracy, Repeatability, and Resolution}
+\label{sec:accuracy_repeatability}
+
+In everyday language, the words "accuracy" and "repeatability" are often used as synonyms, but in engineering, they are completely different, independent characteristics.
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for the classic four-target diagram
+    \begin{infobox}{The Difference Between Accuracy and Repeatability}
+        An illustration of four targets to explain the concepts:
+        \begin{itemize}
+            \item \textbf{Accurate \& Repeatable:} All shots are tightly clustered in the center of the target (the bullseye).
+            \item \textbf{Inaccurate \& Repeatable:} All shots are tightly clustered together, but off-center (e.g., in the top right corner).
+            \item \textbf{Accurate \& Not Repeatable:} The shots are widely scattered, but their average position is in the center of the target.
+            \item \textbf{Inaccurate \& Not Repeatable:} The shots are widely scattered, and their average position is far from the center.
+        \end{itemize}
+    \end{infobox}
+    \caption{An illustration of the difference between accuracy and repeatability.}
+    \label{fig:accuracy_vs_repeatability}
+\end{figure}
+
+\begin{itemize}
+    \item \textbf{\term{Accuracy}:} This characteristic shows how close the \textit{average position} of the TCP from multiple attempts is to the specified (target) point. In simple terms, accuracy is the absence of \textbf{systematic error}. A robot can be inaccurate but very repeatable.
+
+    \item \textbf{\term{Repeatability} (or Precision):} This characteristic shows how close to each other the TCP positions are after multiple approaches to the same target point from the same direction. Repeatability is a measure of the \textbf{scatter}, or random error. It is the robot's ability to hit the same spot over and over again, even if that spot is the wrong one.
+
+    \item \textbf{\term{Resolution}:} This is the smallest increment of movement that the control system can command the robot to make. It is determined by the resolution of the encoders, the precision of the DAC, and other factors. High resolution does not guarantee either high accuracy or high repeatability.
+\end{itemize}
+
+\begin{tipbox}{The Archer Analogy}
+For most industrial tasks (welding, assembly, pick-and-place), \textbf{repeatability is far more important than absolute accuracy}. Imagine two archers.
+The first archer (inaccurate but repeatable) always hits the target 5 cm to the right of the bullseye. It's easy to "calibrate" him: just tell him to aim 5 cm to the left.
+The second archer (accurate but not repeatable) scatters his shots randomly, but their average is centered on the bullseye. His actions are unpredictable, and it's impossible to calibrate him.
+In industry, the first archer is always preferred. If a robot always misses by 0.5 mm in the same direction, this error is easily compensated by simply adjusting the target point in the program. If the robot has a large scatter (poor repeatability), its behavior is unpredictable, and compensating for such an error is impossible.
+\end{tipbox}
+
+% Section 4.5.2
+\subsection{Sources of Error: Systematic and Random}
+
+Errors in a robot's operation arise from a multitude of causes, which can be divided into two large groups.
+
+\paragraph{1. Systematic (Deterministic) Errors}
+These are errors that have a constant character and can be predicted and, therefore, compensated for. They are the main influence on the robot's \textbf{accuracy}.
+\begin{itemize}
+    \item \textbf{Geometric Errors:} This is the primary cause of inaccuracy. They arise from discrepancies between the robot's real geometry and its mathematical model. Examples include: inaccuracies in the DH-parameters (the real link length differs from the one in the model), non-parallelism or non-perpendicularity of joint axes, and encoder zero offset.
+    \item \textbf{Load-Related Errors (Compliance):} Under the weight of the tool and payload, the robot's links elastically deform (bend). %, and backlash is taken up in the gearboxes. 
+    This leads to a displacement of the TCP that depends on the current pose and the load.
+    \item \textbf{Calibration Errors:} Errors made during the calibration of the tool (TCP offset) or user coordinate systems (User Frames).
+    \item \textbf{Thermal Drift:} As motors and gearboxes heat up during operation, the thermal expansion of materials leads to changes in the robot's geometry and shifts in the encoder zeros. This error accumulates over time.
+\end{itemize}
+
+\paragraph{2. Random (Stochastic) Errors}
+These are unpredictable errors that cause a scatter of positions and affect \textbf{repeatability}.
+\begin{itemize}
+    %\item \textbf{Backlash in Gearboxes:} The mechanical clearance in the gears, which means the output position of the gearbox can be slightly different even for the same input position, especially when the direction of motion changes.
+    \item \textbf{Sensor Noise:} Noise and discretization errors in the encoders.
+    \item \textbf{Vibrations:} External vibrations from other equipment or internal ones caused by the robot's own movement.
+\end{itemize}
+
+\paragraph{3. Mixed Errors (Backlash in Gearboxes) :}
+Mechanical play (or "slop") in gear transmissions is a classic source of error that has both a predictable systematic component and an unpredictable random component.
+
+\begin{itemize}
+    \item \textbf{Systematic Component:} The fixed, measurable amount of "slop" that occurs during a reversal of motion. For example, the motor must rotate an extra 0.1 degrees to take up the play before the link moves. This is a predictable offset that can be compensated in software (\term{backlash compensation}).
+
+    \item \textbf{Random Component:} The small, unpredictable variations in position that occur each time the backlash is taken up. Due to friction and micro-geometry, the gears don't re-engage in the exact same way on every cycle. This variability contributes to the random error and affects the robot's repeatability.
+\end{itemize}
+
+\renewcommand{\arraystretch}{1.2} % Increase row spacing
+\begin{longtable}{p{0.2\linewidth} p{0.4\linewidth} p{0.15\linewidth} p{0.15\linewidth}}
+    \caption{Analysis of Robot Error Sources and Compensability}\label{tab:robot-error-analysis}\\
+    \toprule % Thick line before the first row (header)
+    \textbf{Error Type} & \textbf{Source} & \textbf{Affects} & \textbf{Compensable?} \\
+    \addlinespace[3pt] % Added space after the header row
+    \toprule % Thick line immediately under the header row
+    \endfirsthead
+
+    \multicolumn{4}{c}{\tablename~\thetable{} -- continued from previous page} \\
+    \toprule % Thick line for continued header
+    \textbf{Error Type} & \textbf{Source} & \textbf{Affects} & \textbf{Compensable?} \\
+    \addlinespace[3pt] % Added space after the header row for continued tables
+    \toprule % Thick line for continued header
+    \endhead
+
+    \bottomrule % Thick line at the very end of the table
+    \endfoot
+
+    \bottomrule % Thick line for the last page of the table
+    \endlastfoot
+
+    % Table Content
+    \textbf{Geometric Errors} & Model inaccuracies & Accuracy & Yes \\
+    \midrule % Thin line between data rows
+    \textbf{Compliance} & Link deformation under load & Accuracy & Yes \\
+    \midrule % Thin line between data rows
+    \textbf{Calibration} & TCP or frame errors & Accuracy & Yes \\
+    \midrule % Thin line between data rows
+    \textbf{Thermal Drift} & Heating effects & Accuracy & Partial \\
+    \midrule % Thin line between data rows
+    \textbf{Backlash (Mixed)} & Gear play: steady load and reversals & Both & Partial \\
+    \midrule % Thin line between data rows
+    \textbf{Sensor Noise} & Encoder quantization, EMI & Repeatability & No \\
+    \midrule % Thin line between data rows
+    \textbf{Vibrations} & Mechanical excitation & Repeatability & No \\
+\end{longtable}
+
+% Section 4.5.3
+\subsection{The Fix: Compensation and Calibration}
+
+The fight for microns is a process of measuring, modeling, and compensating for the errors listed above. This process is called \term{calibration}.
+
+\begin{tipbox}{Engineering Insight: Accuracy is Earned, Not Given}
+Accuracy is not an innate property of a robot but a result achieved through the process of calibration and maintenance. Without regular checks and recalibration, even the most precise robot will lose its characteristics over time.
+\end{tipbox}
+
+Calibration procedures can be divided into several levels:
+\begin{description}
+    \item[Level 1: Kinematic Calibration (Model Calibration):] This is the most complex and fundamental procedure. Using high-precision external measurement systems (like laser trackers or coordinate measuring machines), the actual TCP positions are measured in dozens of different configurations. Based on this data, special algorithms are used to refine the robot's mathematical model—its DH-parameters. This allows compensating for most of the systematic geometric errors.
+    
+    \item[Level 2: Tool Calibration (TCP Calibration):] This involves determining the exact offset of the TCP relative to the robot's flange. It is usually performed by touching a single point in space from several different orientations.
+    
+    \item[Level 3: User Frame Calibration:] This involves teaching the system the position and orientation of a part or a jig by showing the robot 3-4 characteristic points on the object.
+\end{description}
+
+In addition to calibration, modern controllers can also use real-time software compensation methods, for example, models of link flexibility to compensate for bending under load or thermal models to compensate for thermal drift.

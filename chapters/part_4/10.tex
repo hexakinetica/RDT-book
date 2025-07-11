@@ -1,0 +1,681 @@
+% ===================================================================
+% Chapter 10: Designing for Fault Tolerance and Safety: Life After an Error
+% ===================================================================
+
+\chapter{Designing for Fault Tolerance and Safety: Life After an Error}
+\label{chap:fault_tolerance_safety}
+
+
+\begin{navigationbox}{In this chapter, you will learn:}
+    \begin{itemize}
+        \item To think like a reliability engineer by systematically classifying potential system failures across the NRT, RT, and HAL domains.
+        \item To design a robust, four-stage \term{fault response architecture}: Detection, Classification, Reaction, and Recovery.
+        \item The different industrial \term{Stop Categories} (0, 1, and 2) and how they are implemented for different types of faults.
+        \item How to design a multi-layered "defense-in-depth" strategy for \term{collision prevention}, from offline simulation to reactive contact detection.
+        \item The conceptual role of a \hcode{SafetySupervisor} and its relation to hardware-based Safety PLCs in industrial systems.
+    \end{itemize}
+\end{navigationbox}
+
+
+Up to this point, we have largely been designing RDT for an ideal world. We've assumed that user programs are bug-free, hardware never fails, and networks don't drop packets. However, the reality of the factory floor is a harsh environment where cables break, sensors malfunction, programs contain logical flaws, and operators sometimes make mistakes. The true quality of an industrial control system is defined not by how it performs when everything is perfect, but by how it behaves when things go wrong.
+
+In this chapter, we will learn to think like reliability engineers. We will design a system that doesn't just work, but "survives" and ensures safety in the face of adversity. We will explore how RDT detects errors, reacts to them, and, crucially, prevents catastrophic failures. This is the art and science of \textbf{Fault-Tolerant Design}.
+
+\section{Classifying Off-Nominal Situations: Know Your Enemy}
+\label{sec:error_classification}
+
+The first step in designing a fault-tolerant system is to understand what can actually go wrong. A chaotic, ad-hoc approach to error handling ("let's put a \hcode{try-catch} here just in case") is a path to an unreliable system. We need a systematic classification of potential off-nominal situations. It is most convenient to categorize these errors based on the architectural domain or layer in which they originate or are first detected. A response to a "file not found" error during program loading must be vastly different from a response to an "encoder communication lost" error during high-speed motion.
+
+\subsection{The Importance of Classification}
+\label{subsec:why_classify_errors}
+
+Without a clear classification, it's impossible to design an appropriate and graded response. Is this error a minor warning that the operator can acknowledge and continue? Is it a critical fault that requires an immediate, controlled stop of the robot? Or is it a catastrophic failure demanding an emergency power-off? A well-defined error classification system is the foundation upon which a rational and safe error handling architecture is built. It allows us to map specific error codes or events to pre-defined system reactions.
+
+\subsection{Planning and Logic Errors (NRT-Domain): The "Soft" Failures}
+\label{subsec:nrt-domain-errors} % Метка с дефисами
+
+These are errors that typically occur in the "thinking" part of our controller, the Non-Real-Time (NRT) domain, usually during the path planning or program interpretation phase. They do not require an instantaneous, microsecond-level reaction but must be detected before an incorrect or unsafe trajectory is sent for execution.
+
+\paragraph{Unreachable Target Point}
+This error occurs when the \hcode{TrajectoryPlanner} receives a command to move to a Cartesian pose, but the \hcode{KinematicSolver} (e.g., \hcode{KdlKinematicSolver}) cannot find a valid set of joint angles to reach that pose. This could be because the point is physically outside the robot's workspace, or it requires an impossible orientation (e.g., trying to point the tool directly backwards through its own base).
+
+Typical causes include programming errors (incorrect coordinates), incorrect Tool or Base frame definition, or attempting to reach a point beyond the robot's physical limits.
+
+RDT's conceptual response: The \hcode{solveIK()} method in our \hcode{KinematicSolver} interface returns a \hcode{std::optional<AxisSet>}. If no solution is found, it returns \hcode{std::nullopt}. The \hcode{TrajectoryPlanner}, upon receiving this, should flag an error, not generate any setpoints for this segment, and inform the \hcode{RobotController}. The \hcode{RobotController} then updates \hcode{StateData} with an appropriate error message (e.g., "E101: Target Unreachable - IK Solution Failed") and transitions the system to an \hcode{Error} state, refusing to execute the current command.
+
+\begin{principlebox}{Industrial Controllers: Unreachable Point Errors.}
+    KUKA controllers might display an error like "KSS01322: Point P1 unreachable." Fanuc might show "MOTN-017 Path not found" or "MOTN-023 At limit." The controller typically stops program execution and waits for operator intervention or a program correction.
+\end{principlebox}
+
+\paragraph{Violation of Software Limits or Workspaces}
+This error occurs when a target point is kinematically reachable, but the planned path to it (or the point itself) violates a software-defined limit. This could be a Cartesian workspace (e.g., "TCP must not enter Zone A"), a joint-space limit (e.g., "Axis 4 must not exceed 90 degrees"), or a tool orientation limit.
+
+Typical causes include incorrectly programmed points close to a forbidden zone or misconfigured workspace limits.
+
+RDT's conceptual response: The \hcode{TrajectoryPlanner}, during its path generation or validation phase, checks each intermediate point against defined workspaces (which would be part of the configuration data). If a violation is detected, it aborts planning for that segment and reports an error (e.g., "E105: Workspace Violation - Path intersects Zone A").
+
+\begin{principlebox}{Industrial Controllers: Work Envelopes and Safe Zones.}
+    Most controllers provide extensive support for defining Cartesian and joint-axis "work envelopes" or "safe zones." KUKA has "Axis-Specific Workspaces" and "Cartesian Workspaces." ABB has "Robtargets" with zone data. If a planned path would violate these, the controller typically throws a pre-execution error.
+\end{principlebox}
+
+\paragraph{Path Approaching Singularity (Detected by Planner)}
+This error occurs when the \hcode{TrajectoryPlanner}, while discretizing the path and solving IK for intermediate points, detects that the robot's configuration is getting dangerously close to a kinematic singularity (e.g., wrist singularity or elbow singularity).
+
+Typical causes include programming a path that requires an orientation change near the center of the wrist's alignment, or a move that fully extends the arm.
+
+RDT's conceptual response: A sophisticated \hcode{KinematicSolver} might not just return a solution but also a "condition number" or a "manipulability measure" indicating proximity to a singularity. If this value crosses a threshold, the \hcode{TrajectoryPlanner} can flag a warning or even an error (e.g., "W201: Singularity Approaching on Path Segment"). It might try to slightly alter the path or orientation to avoid it, or it might refuse to generate the path if avoidance is impossible.
+
+\begin{principlebox}{Industrial Controllers: Singularity Avoidance Features.}
+    Controllers often have "singularity avoidance" features. KUKA allows defining behavior for singularities (e.g., \hcode{CIRC P1,P2,CA 360} vs \hcode{CIRC P1,P2,C\_DIS}). Some controllers might automatically adjust wrist orientation slightly to pass through a singularity smoothly if the TCP path allows it, or they might slow down. If unavoidable and critical, they will error out.
+\end{principlebox}
+
+\paragraph{Logical Errors in User Program (DSL/Script)}
+This refers to logical errors in the user-written robot program (e.g., in KRL for KUKA, RAPID for ABB, or our future RDT DSL) that are caught by the program interpreter/compiler running in the NRT-domain.
+
+Typical causes include division by zero in a script, array index out of bounds, attempting to call a non-existent subroutine, or an infinite loop without motion commands.
+
+RDT's conceptual response: If RDT had a DSL interpreter, it would be responsible for catching these errors. It would stop the execution of the user program, set an appropriate error message in \hcode{StateData}, and transition the \hcode{RobotController} to an \hcode{Error} state.
+
+\begin{principlebox}{Industrial Controllers: Common Error Messages.}
+    These are common errors. KUKA might show "KSS00005: Division by zero" or "KSS01101: Index out of range." The program execution stops, and the program cursor usually points to the offending line.
+\end{principlebox}
+
+
+For most of these NRT-domain errors, the reaction is relatively "soft": the system typically refuses to execute the faulty command or program, informs the user with a clear message, and waits for correction. There is usually no immediate physical danger as the error is caught \textit{before} motion execution.
+% --- Continuation of 10.1 ---
+
+\subsection{Execution Errors (RT-Domain): The "Hard" Real-Time Failures}
+\label{subsec:rt-domain-errors}
+
+These errors are far more critical as they occur in the "spinal cord" of our robot, the \hcode{MotionManager}'s RT-cycle, often while the robot is physically moving. They demand an immediate, deterministic, and safe reaction.
+
+\paragraph{Look-ahead Buffer Underrun (\hcode{TrajectoryQueue} Empty)}
+This error occurs when the \hcode{MotionManager} wakes up for its next RT-tick, attempts to fetch a new setpoint from the \hcode{TrajectoryQueue}, but finds the queue empty. Essentially, the NRT-planner has failed to supply motion commands on time.
+
+Typical causes include an overloaded NRT-domain (high CPU usage from other processes), the planner getting stuck in a complex calculation for too long, or an undersized look-ahead buffer for the current system's latency.
+
+As discussed in Section~\ref{subsec:stage4_rt_core} (Hold Position mechanism), RDT's conceptual response is not to immediately fault. The \hcode{MotionManager} will re-send the \textit{last successfully commanded setpoint} to the HAL, effectively holding its current position, and flag this underrun condition. If the underrun persists for a configurable number of cycles (e.g., 5-10 ticks, meaning 10-20ms of no new commands), the \hcode{MotionManager} escalates this to a critical error. It then stops sending motion commands (or sends a command for a controlled stop along the last known trajectory segment), sets its internal state to \hcode{RT\_State::Error}, and communicates this error status upwards via the feedback queue, which the \hcode{RobotController} propagates to \hcode{StateData}.
+
+\begin{principlebox}{Industrial Controllers: Buffer Underrun Errors.}
+    This is a critical issue in industrial controllers. Specific error messages like "KSS00404: Advance run pointer empty" (KUKA) or "MOTN-066 Buffer is empty" (Fanuc) are common. The robot typically performs a controlled motion stop (e.g., Stop Category 1). Persistent underruns point to a serious performance problem in the NRT-domain or an undersized buffer.
+\end{principlebox}
+
+\paragraph{RT-Cycle Deadline Miss / Overrun (Watchdog Timeout)}
+This catastrophic failure of the real-time guarantee occurs when a single execution of the \hcode{MotionManager::tick()} method takes longer than its allocated RT-cycle period (e.g., > 2ms). This is detected by an external (hardware) or internal (software) watchdog timer.
+
+Common causes involve a bug in the RT-code (e.g., an unexpected long loop, a non-blocking call that accidentally blocked), an interrupt storm from a faulty hardware device, or extreme CPU starvation of the RT-thread due to misconfigured OS priorities.
+
+Upon timeout, the watchdog must trigger an immediate, high-priority fault. In a robust system, this would ideally trigger a hardware-level E-Stop or, at minimum, signal the \hcode{MotionManager} (via an interrupt or a high-priority flag) to execute its \hcode{emergencyStop()} HAL command and transition to a non-recoverable error state, as any further motion commands would be unreliable.
+
+\begin{principlebox}{Industrial Controllers: Watchdog Timer Failures.}
+    All industrial controllers have sophisticated watchdog mechanisms. A watchdog timeout is one of the most severe errors, often indicated by messages like "SYS-005 Watchdog timer expired" (Fanuc) or specific CPU/RTOS fault codes. The system usually enters a state requiring a full reboot. Debugging these requires specialized RTOS tools and trace analysis.
+\end{principlebox}
+
+\paragraph{Following Error Exceeded}
+This error is detected when the servo drive itself, or the \hcode{MotionManager} analyzing feedback, finds that the difference between the commanded joint position and the actual measured joint position has exceeded a predefined tolerance for a certain period.
+
+Typical causes include:
+\begin{itemize}
+    \item \textbf{Physical Collision:} The robot arm has hit an obstacle.
+    \item \textbf{Overload:} The robot is trying to lift a payload heavier than its capacity, or it's accelerating too quickly for the given mass.
+    \item \textbf{Mechanical Failure:} A seized bearing, a broken gearbox tooth, a slipping motor coupling.
+    \item \textbf{Drive/Motor Fault:} An issue within the servo motor or drive electronics.
+    \item \textbf{Incorrect PID Tuning:} Poorly tuned servo gains can lead to oscillations or inability to follow the command under load.
+\end{itemize}
+
+This is a critical safety-relevant error. The servo drive itself will usually be the first to detect it and typically fault, stopping the motor and applying brakes. It reports this fault status to the \hcode{MotionManager} via the HAL. The \hcode{MotionManager}, upon receiving this drive fault, must immediately stop all other axes (coordinated stop), transition to \hcode{RT\_State::Error}, and report the specific axis and error type up to the NRT domain.
+
+\begin{principlebox}{Industrial Controllers: Motion Enable and Following Errors.}
+    This is a very common and important error. KUKA calls it "Motion enable missing" or "Following error axis A1." Fanuc uses "SRVO-006 Panel E-stop" or "SRVO-007 External E-stop" if it's due to an external stop, or specific servo errors like "SRVO-043 DCAL alarm (Group:i Axis:j)." The parameters for following error limits (\hcode{\$SERVO\_LAG\_LIMIT} in Fanuc, \hcode{\$VEL\_FFW\_MAX} and related parameters in KUKA) are critical tuning parameters. The controller's response is almost always a controlled stop (Category 1 or 2) and disabling of drives for the affected group.
+\end{principlebox}
+
+Errors in the RT-domain generally trigger a more immediate and forceful system response, prioritizing safety and preventing mechanical damage.
+Errors in the RT-domain generally trigger a more immediate and forceful system response, prioritizing safety and preventing mechanical damage.
+% --- Continuation of 10.1 ---
+
+\subsection{Hardware Failures and External Events (HAL and Physical World): Critical Faults}
+\label{subsec:hal-physical-errors} % Метка с дефисами
+
+These are errors that originate from the physical hardware layer (robot, servo drives, I/O modules, network) or from external events that directly impact the system's ability to operate safely. They are often the most critical and require immediate, often hardware-level, intervention.
+
+\paragraph{Loss of Communication with Drive/IO Module}
+This occurs when the real-time industrial network (e.g., EtherCAT, Profinet) reports a loss of communication with one or more slave devices (servo drives or I/O modules).
+
+Typical causes include a cable break or disconnection, a faulty network card (on controller or slave), power loss to a slave device, or extreme electromagnetic interference corrupting network traffic.
+
+RDT's conceptual response: The HAL layer (specifically, the concrete implementation of \hcode{IMotionInterface} like \hcode{UDPMotionInterface} or a future \hcode{EtherCATMotionInterface}) would detect this. \hcode{sendCommand()} might fail, or \hcode{readState()} might timeout or return a status indicating communication loss. This should throw a critical exception. The \hcode{MotionManager}, upon catching this exception, must immediately transition to \hcode{RT\_State::Error}, attempt to command a safe stop if possible (though communication might be lost), and signal the error to the NRT-domain. The \hcode{RobotController} would then log a specific error like "E301: Communication Lost with Axis 3 Drive."
+
+\begin{principlebox}{Industrial Controllers: Fieldbus Errors.}
+    Fieldbus errors are very serious. KUKA might show "KSS15000: Error on bus \<X>". Fanuc could display "PRIO-230 ETHERNET board error" or specific errors related to its I/O Link or Servo Link. The system typically performs an emergency stop as it can no longer reliably control or monitor the affected devices. Redundant network paths are sometimes used in highly critical applications.
+\end{principlebox}
+
+\paragraph{Internal Drive Fault Reported by Servo Drive}
+This occurs when the servo drive itself detects an internal critical error and reports it to the main controller.
+
+Typical causes include overheating of the drive or motor, overvoltage/undervoltage on the DC bus, a short circuit in motor windings, encoder hardware failure, or an internal processor fault in the drive.
+
+RDT's conceptual response: The \hcode{RobotStateFrame} returned by \hcode{IMotionInterface::readState()} would contain status bits or an error code from the drive. The \hcode{MotionManager} must check these in every RT-cycle. If a drive fault is detected, it must immediately stop all axes (coordinated stop, as one axis failing can make the whole robot unstable), set \hcode{RT\_State::Error}, and report the fault.
+
+\begin{principlebox}{Industrial Controllers: Drive Diagnostic Information.}
+    Drives provide a wealth of diagnostic information. Fanuc has a whole category of "SRVO-xxx" alarms. KUKA has "KSD" (KUKA Servo Drive) error messages. These errors usually lead to a Category 1 or 2 stop, and the drive itself will often disable its power stage and apply brakes. The HMI will display the specific error code from the drive, allowing a technician to diagnose the issue.
+\end{principlebox}
+
+\paragraph{Encoder Hardware Failure (Reported by Drive or HAL)}
+This error occurs when the system detects a problem with the encoder signal itself (e.g., loss of signal, corrupted data, "unbelievable" position jumps).
+
+Typical causes include a damaged encoder cable, faulty encoder electronics, or severe electrical noise interfering with the encoder signal.
+
+RDT's conceptual response: This is usually detected by the servo drive first, which then reports it as an internal drive fault. If the HAL directly processes raw encoder signals (less common for main axes), it would detect it. The reaction is the same as an internal drive fault: immediate stop and error state.
+
+\begin{principlebox}{Industrial Controllers: Encoder Failures.}
+    Encoder failures are critical because the system loses its ability to know where the robot is. Errors like "SRVO-047 Lsi SVAL1 (INV)" (Fanuc) or KUKA messages related to "EMD" (Electronic Mastering Device) or specific encoder types point to this.
+\end{principlebox}
+
+\paragraph{Activation of Hardware E-Stop Circuit}
+This is triggered when the physical emergency stop circuit is activated.
+
+Typical causes include an operator pressing an E-Stop mushroom button, a safety gate being opened, a light curtain being breached, or a safety mat being stepped on.
+
+RDT's conceptual response: This is the highest priority stop. The hardware E-Stop circuit itself will typically cut power to the servo drives directly (Stop Category 0). The robot controller software (\hcode{MotionManager} or a dedicated safety monitoring task) will also detect the E-Stop signal (via a dedicated input or a status from a Safety PLC). It must then:
+\begin{enumerate}
+    \item Immediately cease sending any new motion commands.
+    \item Transition its internal state to \hcode{RT\_State::Error} (or a specific \hcode{RT\_State::EStop}).
+    \item Inform the \hcode{RobotController} and \hcode{StateData} that an E-Stop condition is active.
+\end{enumerate}
+Recovery from an E-Stop typically requires operator intervention to resolve the cause, then a specific reset sequence on the HMI.
+
+\begin{principlebox}{Industrial Controllers: Robust E-Stop Handling.}
+    All industrial controllers have robust E-Stop handling. The E-Stop circuit is usually dual-channel and hardwired, operating independently of the main control software for maximum reliability. Messages like "SRVO-001 Operator Panel E-stop" (Fanuc) or "KSS00001: Emergency Stop" (KUKA) are displayed. The system will not allow motion until the E-Stop condition is cleared and explicitly reset.
+\end{principlebox}
+
+Hardware-level faults and external safety events almost always lead to an immediate cessation of motion and require operator intervention to diagnose and recover. The primary goal here is personnel safety and equipment protection.
+
+\subsubsection{Summary of Section 10.1}
+\label{subsubsec:section10_1_summary}
+Knowing your enemy is the first step to defeating it. By systematically classifying potential off-nominal situations based on where they originate and their potential impact, we can begin to design a comprehensive fault-tolerance strategy.
+\begin{itemize}
+    \item \textbf{NRT-Domain Errors} are often informational or require program correction, usually handled by stopping the current task and reporting to the user.
+    \item \textbf{RT-Domain Errors} are more critical, often requiring a controlled motion stop to maintain safety and system integrity.
+    \item \textbf{HAL/Physical World Errors} are typically the most severe, often triggering immediate emergency stops and requiring hardware-level intervention or repair.
+\end{itemize}
+With this classification in mind, we can now move on to designing the architecture of how our RDT system will detect, react to, and recover from these diverse off-nominal situations.
+
+%\lipsum[1-2] % Placeholder text
+
+% ===================================================================
+% Section 10.2: The Architecture of Fault Response: A Four-Stage Process
+% ===================================================================
+
+\section{The Architecture of Fault Response: A Four-Stage Process}
+\label{sec:fault_response_architecture}
+
+It is not enough to simply know what errors \textit{can} occur. A mature control system must have a clear, predictable, and robust plan of action for \textit{every} type of off-nominal situation. This plan can be broken down into four sequential stages, forming a complete fault handling cycle, as illustrated in Figure~\ref{fig:fault_handling_cycle}. This structured approach ensures that errors are detected promptly, assessed correctly, handled safely, and reported clearly.
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{The Four-Stage Fault Handling Cycle}
+        \textbf{Cyclical Diagram of Error Processing}
+
+        {\footnotesize
+        \begin{alltt}
++-----------------------+  ------>  +-----------------------+
+| 1. Detection          |           | 2. Classification     |
+| (Is something wrong?) |           | (How serious is it?)  |
++-----------^-----------+           +-----------+-----------+
+            |                                   |
+(Error Cleared/Normal Op)           (Error Details)
+            |                                   v
++-----------+-----------+  <------  +-----------+-----------+
+| 4. Reporting/Recovery |           | 3. Reaction           |
+| (Inform user, reset)  |           | (What to do now?)     |
++-----------------------+           +-----------------------+
+        \end{alltt}
+        }
+    \end{infobox}
+    \vspace{0.3cm}
+    \caption{The systematic four-stage cycle for processing off-nominal situations in a robust control system.}
+    \label{fig:fault_handling_cycle}
+\end{figure}
+
+\subsection{Stage 1: Detection – The First Indication of Trouble}
+\label{subsec:detection_stage}
+The first step is to become aware that an error has occurred. In RDT, as in most industrial systems, detection mechanisms are implemented at various architectural layers:
+\begin{itemize}
+    \item \textbf{Function Return Codes \& \hcode{std::optional}:} For operations that can "legitimately" fail without it being a system catastrophe (e.g., an IK solver not finding a solution for an out-of-reach point), functions return specific error codes or an empty \hcode{std::optional}. The caller is responsible for checking this return value. This is common in the NRT-domain logic of the \hcode{TrajectoryPlanner}.
+    \item \textbf{Exceptions:} For unexpected, usually critical, failures where normal program flow cannot continue. In RDT, the HAL (\hcode{IMotionInterface::readState()}) might throw an exception upon a communication timeout or corrupted data from a drive. The RT-core (\hcode{MotionManager}) must catch these to prevent an uncontrolled crash.
+    \item \textbf{Watchdog Timers:} Both hardware and software watchdogs monitor critical processes. If the RT-cycle in \hcode{MotionManager} exceeds its deadline, a watchdog will trigger a high-priority fault. Servo drives also have internal watchdogs monitoring communication with the main controller.
+    \item \textbf{State Monitoring \& Limit Checks:}
+        \begin{itemize}
+            \item \textit{Following Error:} As discussed, servo drives and the \hcode{MotionManager} constantly monitor the difference between commanded and actual positions. Exceeding a threshold is a primary indicator of a collision or overload.
+            \item \textit{Software Limits:} The \hcode{TrajectoryPlanner} checks against pre-defined joint limits and Cartesian workspaces. The \hcode{MotionManager} can perform redundant, simpler limit checks on setpoints as a final safety barrier.
+            \item \textit{Hardware Status Bits:} Servo drives and I/O modules provide rich diagnostic status (e.g., "over-temperature," "encoder fault," "short circuit"). The HAL is responsible for reading these and making them available.
+        \end{itemize}
+    \item \textbf{External Safety Signals:} Physical E-Stop buttons, light curtains, and safety door switches provide direct hardware signals, usually processed by a dedicated Safety PLC or safety relays, which then inform the main controller.
+\end{itemize}
+Effective detection relies on a combination of these mechanisms, providing defense in depth.
+
+\subsection{Stage 2: Classification and Decision Making – Assessing Severity}
+\label{subsec:classification_stage}
+Once an error is detected, the system must classify its severity and decide on an appropriate course of action. This logic is distributed:
+\begin{itemize}
+    \item \textbf{Safety PLC / Hardwired Logic:} For the most critical safety events (E-Stop, guard open), the decision is often made by dedicated, certified hardware logic, which can directly cut power to drives, bypassing the main software controller entirely for maximum reliability.
+    \item \textbf{RT-Core (\hcode{MotionManager}):} For errors detected within the real-time cycle (e.g., HAL exception, persistent buffer underrun, critical following error reported by a drive), the \hcode{MotionManager} must make an immediate, deterministic decision. This usually involves initiating a controlled stop and flagging an error state. It does not have the luxury of complex reasoning.
+    \item \textbf{NRT-Core (\hcode{RobotController}):} For errors detected in the NRT-domain (e.g., IK failure, workspace violation from planner, non-critical drive status messages), the \hcode{RobotController} has more time to analyze the situation. It maintains a conceptual "fault reaction map" or logic that associates specific error codes or conditions with predefined system responses. It might decide to simply reject a command, post a warning, or initiate a controlled stop if the error is more serious.
+\end{itemize}
+The goal of this stage is to quickly determine if the error compromises safety, threatens equipment, or simply prevents the current task from completing.
+% --- Continuation of 10.2 ---
+
+\subsection{Stage 3: Reaction – Executing the Safety Plan}
+\label{subsec:reaction_stage}
+Based on the classification, the system executes a specific reaction. The primary reactions involve stopping the robot's motion. The international standard IEC 60204-1 ("Safety of machinery - Electrical equipment of machines") defines several stop categories, which are widely adopted in industrial automation:
+
+
+\paragraph{Stop Category 0 (Uncontrolled Stop):}
+        \begin{itemize}
+            \item \textit{Definition:} Stopping by immediate removal of power to the machine actuators.
+            \item \textit{Implementation:} Typically achieved by a hardwired Emergency Stop (E-Stop) circuit. Pressing an E-Stop button opens safety relays, which cut the main power to the servo drive amplifiers. The motor brakes (if present, and they usually are spring-applied) engage.
+            \item \textit{RDT Conceptual Realization:} The HAL's \hcode{IMotionInterface::emergencyStop()} method would conceptually trigger this, though in a real certified system, the primary E-Stop path is purely hardware. The software E-Stop serves as a redundant or secondary trigger.
+        \end{itemize}
+        \begin{tipbox}{Stop Category 0: Uncontrolled Stop.}
+            \begin{itemize}
+                 \item Pros: Fastest possible stop, independent of software state.
+                \item Cons: Can be harsh on mechanics due to abrupt braking; robot loses position and requires re-homing; path is lost.
+            \end{itemize}
+        \end{tipbox}
+
+\paragraph{Stop Category 1 (Controlled Stop, then Power Removal):}
+        \begin{itemize}
+            \item \textit{Definition:} A controlled stop, bringing the machine to a standstill by maintaining power to the actuators to execute the deceleration, and then removing power once the stop is achieved.
+            \item \textit{Implementation:} The robot controller (\hcode{MotionManager} in RDT) commands the servo drives to decelerate along a predefined braking ramp (e.g., based on the last commanded velocity or a specific emergency deceleration profile). Once zero velocity is reached, power to the drives can be removed (or brakes applied).
+            \item \textit{RDT Conceptual Realization:} Triggered by most RT-domain errors (e.g., critical following error, persistent buffer underrun). The \hcode{MotionManager} clears the command queue and generates a sequence of setpoints to smoothly decelerate the robot.
+        \end{itemize}
+            \begin{tipbox}{Industrial Controllers: Controlled Stops (STO/SS1).}
+    This is the most common type of "fault stop." KUKA controllers refer to this as STO (Safe Torque Off) often preceded by SS1 (Safe Stop 1) functionality. Fanuc systems have similar "Controlled Stop" or "Servo-Off" states. The key is that the robot stops \textit{on its planned path} if possible, or along a predictable braking path.
+    \begin{itemize}
+        \item \textit{Pros:} Gentler on mechanics than Category 0; robot often maintains position knowledge (if power is not fully cut to encoders).
+        \item \textit{Cons:} Relies on software and drive functionality being available to perform the controlled stop.
+    \end{itemize}
+        \end{tipbox}
+
+
+\paragraph{Stop Category 2 (Controlled Stop, Power Remains On):}
+        \begin{itemize}
+            \item \textit{Definition:} A controlled stop with power remaining available to the machine actuators. The robot comes to a standstill, and the servo drives actively hold this position.
+            \item \textit{Implementation:} Similar to Category 1, the controller commands a deceleration. However, once stopped, the drives remain enabled and in position control mode.
+            \item \textit{RDT Conceptual Realization:} This is the "Hold Position" mode our \hcode{MotionManager} enters upon buffer underrun. It's also the state after a normal program pause or completion of a segment before the next one is planned.
+        \end{itemize}
+        \begin{tipbox}{Industrial Controllers: Safe Stop 2 (SS2).}
+    KUKA's SS2 (Safe Stop 2) is an example. This is useful if the robot needs to hold a heavy load against gravity after a stop, or if a quick restart is desired without re-enabling drives.
+    \begin{itemize}
+        \item \textit{Pros:} Robot actively holds position; fast restart possible.
+        \item \textit{Cons:} Power remains on actuators, which might be a safety concern in some situations if the reason for the stop was an external safety breach.
+    \end{itemize}
+    \end{tipbox}
+
+The choice of stop category depends on the severity of the fault and the system's safety requirements.
+
+\subsection{Stage 4: Reporting and Recovery – Informing and Awaiting Intervention}
+\label{subsec:reporting_recovery_stage}
+After the immediate reaction (usually a stop), the system must inform the operator about what happened and transition to a state awaiting intervention or recovery.
+
+\paragraph{Reporting (Informing the User and Logs):}
+\begin{itemize}
+    \item \textbf{To \hcode{StateData}:} The component that detected or handled the error (\hcode{RobotController} or \hcode{MotionManager}) writes detailed error information to the \hcode{StateData} object. This includes:
+        \begin{itemize}
+            \item An error code (e.g., \hcode{E101}, \hcode{FAL005}).
+            \item A human-readable error message (e.g., "Target Unreachable," "Axis A3 Following Error").
+            \item Timestamp of the error.
+            \item Contextual information (e.g., current program line, active tool, specific joint that faulted).
+        \end{itemize}
+        The overall robot mode in \hcode{StateData} is set to \hcode{RobotMode::Error}.
+    \item \textbf{To HMI (Human-Machine Interface):} The \hcode{Adapter\_RobotController}, polling \hcode{StateData}, detects the error state and displays a prominent error message on the teach pendant or GUI, often with an audible alarm.
+    \item \textbf{To System Logs:} A dedicated logging component (as discussed in Chapter~\ref{chap:testing_debugging}) should record all error details, along with a snapshot of relevant system variables, to a persistent log file for later analysis and diagnostics.
+\end{itemize}
+
+\paragraph{Recovery (Awaiting Intervention):}
+\begin{itemize}
+    \item \textbf{System Lockout:} Once in an \hcode{Error} state, the \hcode{RobotController} typically refuses to accept new motion commands (except perhaps specific jog commands for recovery, if safe). The robot is effectively "locked out" until the error is acknowledged and cleared.
+    \item \textbf{Operator Action:} The operator must:
+        \begin{enumerate}
+            \item Diagnose the cause of the error using the HMI messages and logs.
+            \item Resolve the underlying issue (e.g., remove an obstacle, correct the program, replace a faulty cable).
+        \end{enumerate}
+    \item \textbf{Error Reset:} The operator then typically presses a "Reset Error" or "Acknowledge Fault" button on the HMI.
+    \item \textbf{System Re-initialization (if needed):} Depending on the severity of the error, the \hcode{RobotController} might require a partial or full re-initialization sequence. For example, after an E-Stop that cut power to encoders, a re-homing procedure might be mandatory. After a communication loss with a drive, the connection might need to be re-established.
+    \item \textbf{Return to Idle/Ready:} Only after the error is cleared and any necessary re-initialization is complete does the system transition back to an \hcode{Idle} or \hcode{Ready} state, prepared to accept new commands.
+\end{itemize}
+
+\begin{principlebox}{Fault Tolerance is Not Just Error Handling.}
+    True fault tolerance goes beyond simply catching exceptions. It is a holistic architectural approach that encompasses robust detection, graded and safe reactions, clear reporting, and well-defined recovery procedures. It requires thinking about "what could go wrong?" at every stage of design and implementation.
+\end{principlebox}
+
+This four-stage process provides a structured framework for building a control system that can not only perform its primary tasks but also handle the inevitable imperfections and failures of the real world with grace and safety.
+
+%\lipsum[1-2] % Placeholder text
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+% ===================================================================
+% Section 10.3: Collision Prevention: The Multi-Layered "Do No Harm" Defense
+% ===================================================================
+
+\section{Collision Prevention: The Multi-Layered "Do No Harm" Defense}
+\label{sec:collision_prevention}
+
+A robot collision—whether with its environment, a workpiece, another robot, or a human—is one of the most feared events in industrial automation. It can lead to costly equipment damage, production downtime, and, most critically, severe injuries. Therefore, a robust control system must employ a comprehensive, multi-layered strategy aimed not just at detecting collisions, but at \textit{preventing} them in the first place. This "do no harm" philosophy is implemented as a pyramid of defenses, where each layer provides an additional level of safety, from proactive planning to reactive emergency measures.
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{The Collision Prevention Pyramid}
+        \textbf{Layers of Defense Against Collisions}
+        {\footnotesize
+        \begin{alltt}
+     +-- Layer 4: Reactive (Contact Detection - Last Resort) --+
+     | * Force/Torque Sensors, Motor Current/Following Error   |
+     +---------------------------------------------------------+
+                           ^ (If all else fails)
+     +-- Layer 3: Real-Time Monitoring (RT - During Motion) ---+
+     | * High-Speed Proximity Sensors (Laser Curtains)         |
+     | * Redundant Following Error Checks                      |
+     +---------------------------------------------------------+
+                           ^ (During motion execution)
+     +-- Layer 2: NRT Online Monitoring (During Path Planning) +
+     | * Workspace Boundaries (Cartesian & Joint)              |
+     | * 3D Model-Based Collision Checking (Cell Sim)          |
+     +---------------------------------------------------------+
+                           ^ (Before motion starts)
+     +-- Layer 1: Offline Planning (Preventive - Most Ideal) --+
+     | * CAD-Based Path Verification (OLP Software)            |
+     | * Program Logic Review & Static Analysis                |
+     +---------------------------------------------------------+
+        \end{alltt}
+        }
+    \end{infobox}
+    \caption{The multi-layered approach to collision prevention, starting with proactive offline measures and progressing to reactive online detection as a last resort.}
+            \vspace{0.3cm}
+    \label{fig:collision_pyramid}
+\end{figure}
+
+\subsection{Level 1: Offline Planning and Simulation (The Preventive Foundation)}
+\label{subsec:offline_collision_prevention}
+The best way to avoid a collision is to never program one. This layer focuses on catching potential issues before the robot program is even loaded onto the controller.
+
+    \textbf{Role of Offline Programming (OLP) Software:} Modern robotic cells are often designed and programmed in sophisticated 3D simulation environments (e.g., KUKA.Sim, ABB RobotStudio, Fanuc ROBOGUIDE, Siemens Process Simulate). These tools allow engineers to:
+        \begin{itemize}
+            \item Import CAD models of the robot, tools, fixtures, workpieces, and the entire cell layout.
+            \item Program robot paths graphically or textually.
+            \item Run full kinematic simulations of the program, visually checking for collisions between the robot model and its environment.
+            \item Perform reachability analysis and cycle time estimation.
+        \end{itemize}
+    \textbf{Advantages:} Catches gross programming errors and obvious layout issues at the earliest, cheapest stage. Allows for program development without needing access to the physical robot.
+    \textbf{Limitations:} Relies on the accuracy of the CAD models and the simulation. Does not account for real-world inaccuracies, dynamic obstacles, or unexpected robot behavior.
+    \textbf{RDT Context:} While RDT itself is a controller, it's designed to execute programs that could be generated by such OLP software. The more thorough the offline simulation, the safer the program fed into RDT will be.
+
+% --- Continuation of 10.3 ---
+
+\subsection{Level 2: Online Monitoring in the NRT-Domain (Proactive Checks)}
+\label{subsec:nrt_online_monitoring}
+Once a program is loaded onto the controller, this layer provides a set of software checks, primarily performed by the \hcode{TrajectoryPlanner} in the NRT-domain \textit{before} motion commands are sent to the RT-core.
+
+
+\paragraph{ \textbf{1. Workspaces (Software-Defined Safe Zones):}}
+    This is a fundamental and widely used technique. A workspace is a geometrically defined region in space (either Cartesian or joint-space) to which specific rules are attached.
+    \begin{itemize}
+        \item \textbf{Types of Zones:}
+            \begin{itemize}
+                \item \textit{Working Envelope / Permitted Zone:} A region the robot's TCP (or other defined points on its structure) is allowed to operate within. Any path attempting to go outside this zone is rejected.
+                \item \textit{Forbidden Zone / Restricted Zone:} A region the robot must never enter (e.g., a pillar, another machine, a safety area for humans).
+                \item \textit{Axis-Specific Limits:} Software limits on the rotation of individual joints, often tighter than the physical hardware limits, to prevent specific configurations or self-collisions.
+                \item \textit{Tool-Specific Zones:} Zones defined relative to the currently active tool, preventing the tool itself from colliding.
+            \end{itemize}
+        \item \textbf{Defining Zones:} These zones are typically configured by an engineer using the controller's development environment. They can be simple (e.g., cuboids, spheres, joint ranges) or complex (defined by multiple planes or CAD surfaces).
+        \item \textbf{Checking in RDT:} In our RDT architecture, the \hcode{TrajectoryPlanner}, after generating a nominal path segment but before discretizing it into setpoints, would check if this segment intersects with any active forbidden zones or exits any permitted zones. If a violation is detected, the planner flags an error, and the motion is not executed.
+\begin{tipbox}{Engineering Insight: Industrial Safety Implementations (DCS/SafeOperation)} % Заголовок улучшен для формальности
+This concept is highly developed in commercial controllers. \textbf{Fanuc's Dual Check Safety (DCS)} and \textbf{KUKA's SafeOperation} (or \textbf{ABB's SafeMove}) are sophisticated, often safety-certified (SIL/PL rated) systems that allow for the creation of complex 3D safe zones. These systems often use redundant processors or certified software to monitor the robot's position (and sometimes speed) against these defined zones. If a violation is imminent, they can trigger a safe, controlled stop (e.g., Stop Category 1 or 2). This is far more advanced than simple software checks in the NRT planner, as it provides a safety-rated layer of protection. RDT's NRT workspace check is a simpler, non-certified precursor to these industrial-grade safety functions.
+\end{tipbox}
+    \end{itemize}
+
+\paragraph{ \textbf{2. Model-Based Collision Checking (NRT-Domain):}}
+    If the controller has a 3D model of the robot and its immediate environment (perhaps a simplified version of the OLP model), the \hcode{TrajectoryPlanner} can perform more sophisticated collision checks.
+    \begin{itemize}
+        \item \textbf{Mechanism:} For each proposed motion segment, the planner can simulate the robot's movement and check for intersections between the robot's 3D model (often represented as a set of swept spheres or convex hulls for efficiency) and the 3D models of known obstacles in its environment.
+        \item \textbf{Advantages:} Can detect potential collisions with static obstacles that might be too complex to define with simple workspaces.
+        \item \textbf{Limitations:} Computationally intensive, making it suitable for NRT pre-checking but not usually for RT-cycle checks. Relies heavily on the accuracy and completeness of the environment model. Cannot react to dynamic, unmodeled obstacles.
+        \item \textbf{RDT Context:} A future extension of RDT's \hcode{TrajectoryPlanner} could incorporate a simplified collision detection library to perform these checks if an environment model is provided.
+    \end{itemize}
+
+
+\subsection{Level 3: Real-Time Online Monitoring (The RT-Domain's Last Software Check)}
+\label{subsec:rt_online_monitoring}
+This layer involves checks performed within the \hcode{MotionManager}'s hard real-time loop, providing a very fast response to imminent dangers that might have been missed by NRT planning or that arise from dynamic conditions.
+
+\textbf{Redundant Limit Checks:} The \hcode{MotionManager}, upon receiving a setpoint from the \hcode{TrajectoryQueue}, can perform a quick, final check against absolute joint limits before sending the command to the HAL. This is a last line of software defense against a runaway joint.
+\textbf{Following Error Monitoring (as a pre-collision indicator):} While a large following error usually indicates a collision has already occurred (Level 4), a rapidly \textit{increasing} following error, or one that stays elevated for several RT-cycles, can sometimes be an early indicator of an impending overload or collision. A sophisticated RT-core might monitor the derivative of the following error.
+    \begin{tipbox}{Engineering Insight: High-Speed Proximity Sensing with RT I/O} % Заголовок улучшен для формальности
+For applications requiring extremely fast reaction to intrusions (e.g., a human hand approaching a high-speed robot), specialized short-range proximity sensors (like compact laser "time-of-flight" sensors or capacitive sensors integrated into the robot's skin) can be used.
+\begin{itemize}
+    \item \textbf{Direct RT Input:} The signals from these sensors are not routed through the slow NRT-domain. They are wired directly to high-speed digital inputs on the robot controller or a dedicated safety module that can be polled within the RT-cycle or trigger an interrupt.
+    \item \textbf{Immediate Reaction:} If the RT-core detects a "too close" signal from such a sensor, it can immediately override the current motion and trigger a fast, controlled stop or a evasive maneuver, often within a few milliseconds. This is much faster than vision-based systems that require NRT image processing.
+    \item \textbf{Example:} This is common in collaborative robot (cobot) applications where safe speed and separation monitoring is crucial.
+\end{itemize}
+\end{tipbox}
+        RDT's architecture could support this by defining a specialized \hcode{ICollisionSensor} interface that the \hcode{MotionManager} polls in its RT-cycle, similar to how Path Correction works.
+
+The checks at this level must be extremely simple and computationally inexpensive, as they execute within the hard real-time loop.
+
+% --- Continuation of 10.3 ---
+
+\subsection{Level 4: Reactive Collision Detection (The Last Resort – Contact Has Occurred)}
+\label{subsec:reactive_collision_detection}
+Despite all preventive measures, collisions can still happen due to unmodeled obstacles, sensor failures, or extreme dynamic events. This layer is about detecting that a physical collision \textit{has already occurred} and reacting immediately to minimize damage and ensure safety. The primary goal here is not to avoid the collision (it's too late for that) but to stop the robot as quickly as possible.
+
+
+\textbf{Detection via Motor Currents / Following Error (Indirect Sensing):}
+    As discussed in Section~\ref{subsec:proprioceptive_sensors} (on current sensors) and Section~\ref{subsec:rt_domain_errors} (on Following Error), a sudden spike in motor current or a persistent, large following error is a strong indicator that the robot has encountered unexpected physical resistance.
+    \begin{itemize}
+        \item \textbf{Mechanism:} The servo drives themselves, or the \hcode{MotionManager}, constantly monitor these values against configurable thresholds.
+        \item \textbf{Sensitivity Tuning:} The "art" here is to set these thresholds correctly. Too low, and the robot will have nuisance stops from minor friction changes or dynamic effects. Too high, and it might not detect a soft collision or might cause damage before stopping. Industrial controllers provide parameters to tune this sensitivity (often called "collision detection level" or similar).
+        \item \textbf{Reaction:} Immediate controlled stop (Stop Category 1 or 2).
+        \item \textbf{Advantages:} Requires no additional hardware.
+        \item \textbf{Disadvantages:} Less sensitive than dedicated F/T sensors; might not detect very soft or slow-speed collisions; requires careful tuning to avoid false positives.
+    \end{itemize}
+
+\textbf{Detection via Dedicated Force/Torque (F/T) Sensor (Direct Sensing):}
+    A 6-axis F/T sensor mounted at the robot's wrist provides the most sensitive and direct way to detect unexpected contact forces.
+    \begin{itemize}
+        \item \textbf{Mechanism:} The \hcode{RobotController} (NRT-domain) continuously polls the F/T sensor (via HAL and \hcode{StateData}). It compares the measured forces/torques against expected values (which might be zero in free space, or a known process force during a task). A sudden, unexpected deviation indicates a collision.
+        \item \textbf{The Speed Challenge for F/T-based Collision Detection.} While an F/T sensor is very sensitive, its data usually passes through the NRT-domain. If a high-speed collision occurs, the NRT loop might be too slow to react before significant force is applied.
+            \begin{itemize}
+                \item \textit{Solution 1 (Fast NRT Polling):} The F/T sensor data can be polled by a high-priority NRT thread at a faster rate than the main \hcode{RobotController} loop.
+                \item \textit{Solution 2 (Thresholding in Drive/Sensor):} Some advanced F/T sensors or servo drives can have built-in, configurable force/torque thresholds that can trigger an immediate hardware interrupt or a fast signal to the RT-core if exceeded, bypassing the NRT loop for the initial stop command.
+                \item \textit{Solution 3 (Model-Based Predictive):} Using a dynamic model of the robot to predict expected contact forces and comparing them to F/T sensor readings for more subtle anomaly detection.
+            \end{itemize}
+        \item \textbf{Reaction:} Typically a very fast controlled stop, often followed by a small "retract" or "yield" motion to relieve pressure at the contact point.
+        \item \textbf{Advantages:} Extremely sensitive; can detect very light contacts; provides full 6-axis force/torque information for sophisticated response strategies.
+        \item \textbf{Disadvantages:} Requires expensive F/T sensor hardware; data processing (filtering, gravity/inertia compensation) can be complex.
+    \end{itemize}
+%\end{enumerate}
+Reactive collision detection is the safety net. Its activation signifies that preceding preventive layers have failed or were insufficient for the given situation.
+
+\subsection{Architectural Integration in RDT: A Layered Approach}
+\label{subsec:collision_rdt_integration}
+
+Our RDT architecture is designed to accommodate these layers of defense:
+
+\textbf{Level 1 (Offline):} Achieved by using external OLP software that generates programs for RDT. RDT itself does not perform offline simulation.
+\textbf{Level 2 (NRT Online):}
+        \begin{itemize}
+            \item \textit{Workspaces:} The \hcode{TrajectoryPlanner} would be extended to load workspace definitions (from configuration files) and check each planned segment against them before sending setpoints to the buffer. A violation would result in a planning error.
+            \item \textit{3D Model Checking:} Could be a future module called by the \hcode{TrajectoryPlanner}.
+        \end{itemize}
+\textbf{Level 3 (RT Online):}
+        \begin{itemize}
+            \item \textit{Limit Checks:} Simple joint limit checks can be added to \hcode{MotionManager::tick()} before \hcode{sendCommand()}.
+            \item \textit{Fast Proximity:} Would require a new \hcode{IProximitySensorArray} HAL interface polled by \hcode{MotionManager}.
+        \end{itemize}
+\textbf{Level 4 (Reactive):}
+        \begin{itemize}
+            \item \textit{Following Error/Current:} The \hcode{MotionManager} already receives drive status. It could be extended to monitor following error thresholds or specific drive fault codes indicating overload/collision.
+            \item \textit{F/T Sensor:} Data would come via HAL to \hcode{StateData}. A dedicated NRT module (or logic within \hcode{RobotController}) would monitor this and command a stop if thresholds are exceeded.
+        \end{itemize}
+
+
+\subsubsection{Summary of Section 10.3}
+\label{subsubsec:section10_3_summary}
+Preventing collisions in an industrial environment requires a defense-in-depth strategy, not a single magic bullet.
+
+\textbf{The Principle:} Layered safety, from proactive offline planning to fast online monitoring and robust reactive measures.
+\textbf{Key Techniques for RDT (Conceptual):}
+        \begin{itemize}
+            \item NRT-domain workspace checking in the \hcode{TrajectoryPlanner}.
+            \item RT-domain limit checks and potential for fast proximity sensor integration in \hcode{MotionManager}.
+            \item Reactive detection via monitoring drive status (following error, current) and dedicated F/T sensors, with decision logic in the \hcode{RobotController}.
+        \end{itemize}
+\textbf{Industrial Best Practice:} Sophisticated industrial controllers combine these software techniques with certified hardware-based safety functions (Safety PLCs, safe motion monitoring) to achieve the highest levels of safety integrity.
+
+A well-designed collision prevention system is not just about avoiding damage; it's about building trust in the robot's ability to operate safely and reliably in a complex world.
+
+
+% ===================================================================
+% Section 10.4: The Conceptual Role of a `SafetySupervisor` Module
+% ===================================================================
+
+\section{The Conceptual Role of a \hcode{SafetySupervisor} Module}
+\label{sec:safety_supervisor_conceptual}
+
+Throughout our discussion of fault tolerance and collision prevention, we've seen various components (\hcode{RobotController}, \hcode{MotionManager}, HAL implementations) detecting errors and taking reactive measures. In a system of RDT's current complexity, this distributed responsibility can be manageable. However, as systems grow larger, or when they need to meet stringent industrial safety standards (like SIL - Safety Integrity Level, or PL - Performance Level), it often becomes beneficial to centralize the overarching safety logic into a dedicated, well-defined component.
+
+Conceptually, we can call this component the \textbf{\hcode{SafetySupervisor}}. While RDT in its current form does not have a single class explicitly named this way, understanding its hypothetical role is crucial for appreciating how industrial-grade safety architectures are structured and for envisioning the future evolution of RDT.
+
+\subsection{The Problem: Distributed Safety Logic and Verifiability}
+\label{subsec:distributed_safety_problem}
+
+When safety-critical decision-making is scattered across multiple modules:
+\begin{itemize}
+    \item \textbf{Verification becomes difficult:} It's hard to prove that all possible error combinations are handled correctly and consistently if the logic is spread out. How do you ensure that the \hcode{MotionManager}'s reaction to a drive fault doesn't conflict with the \hcode{RobotController}'s reaction to a planning error that might have occurred simultaneously?
+    \item \textbf{Certification is challenging:} For systems requiring safety certification (e.g., IEC 61508, ISO 13849), regulatory bodies need to audit the safety logic. This is much easier if the logic is concentrated in a verifiable module rather than diffused throughout the codebase.
+    \item \textbf{Maintainability suffers:} Modifying or extending safety rules can become a complex and risky undertaking if it involves changes in many different places.
+\end{itemize}
+The principle of "Separation of Concerns" suggests that safety, being such a critical and distinct concern, might warrant its own dedicated architectural component.
+
+\subsection{The Solution: A Centralized Safety Decision-Maker}
+\label{subsec:safety_supervisor_solution}
+
+The conceptual \hcode{SafetySupervisor} acts as the central nervous system for all safety-related information and actions. It doesn't perform motion planning or real-time control itself. Its sole responsibilities are to:
+
+
+\textbf{Aggregate System Health Information:} It is the primary consumer of all status and error information from every part of the system:
+        \begin{itemize}
+            \item Hardware status from the HAL (drive faults, E-Stop signals, sensor states).
+            \item Real-time execution status from the \hcode{MotionManager} (cycle overruns, buffer underruns, following errors).
+            \item Planning and logic status from the \hcode{RobotController} (IK failures, workspace violations, program errors).
+            \item State of external safety devices (light curtains, safety gates, if not handled by a dedicated Safety PLC).
+        \end{itemize}
+        Conceptually, all these components would report their health status to the \hcode{SafetySupervisor} (perhaps through dedicated fields in \hcode{StateData} or via a dedicated event bus).
+
+\textbf{Implement the "Safety Decision Matrix":} Based on the aggregated information, the \hcode{SafetySupervisor} evaluates the overall system state against a predefined "safety decision matrix" or a set of safety rules. This matrix determines:
+        \begin{itemize}
+            \item The severity of the current situation (e.g., warning, critical error, catastrophic fault).
+            \item The appropriate safety reaction (e.g., log warning, perform Stop Category 1, trigger Stop Category 0).
+        \end{itemize}
+        This logic would encapsulate much of what we described in Section~\ref{sec:fault-response-architecture} % <-- Раскомментировал и исправил метку
+        regarding classification and reaction.
+
+\textbf{Initiate Coordinated Safety Actions:} The \hcode{SafetySupervisor} does not typically stop the robot directly (unless it's a software E-Stop). Instead, it \textit{commands} other components to take appropriate action:
+        \begin{itemize}
+            \item It might tell the \hcode{RobotController} to "enter error state and perform a controlled stop."
+            \item It might directly command the HAL to trigger an \hcode{emergencyStop()} if a critical, unrecoverable hardware fault is detected.
+            \item It updates the global system status in \hcode{StateData} to reflect the safety event.
+        \end{itemize}
+
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{Conceptual Placement of a \hcode{SafetySupervisor}}
+        \textbf{Architectural Diagram with a Central \hcode{SafetySupervisor}}
+
+        {\footnotesize
+        \begin{alltt}
+ [Planner]   [MM]    [Adapter]   [StateData]    [HAL]
+     |         |         |           |            |
+(Errors) (RT Err) (E-Stop)   (Status)    (Status)
+     |         |         |           |            |
+     v         v         v           v            v
++-----------------------------------------------------+
+|                SafetySupervisor                     |
+|                (Central Safety Logic)               |
++-----------------------------------------------------+
+        |                        |
+(Cmd Stop/Error)                 | (E-Stop Cmd)
+        |                        |
+        v                        v
+   [RobotCtrl]                  [HAL]
+        \end{alltt}
+        }
+    \end{infobox}
+            \vspace{0.3cm}
+    \caption{The conceptual \hcode{SafetySupervisor} acts as a central hub, receiving health and error information from all system components and issuing coordinated safety responses.}
+    \label{fig:safety-supervisor-conceptual}
+\end{figure}
+% --- Continuation of 10.4 ---
+
+\subsection{Relation to RDT's Current Architecture and Industrial Systems}
+\label{subsec:safety_supervisor_rdt_industrial}
+
+\paragraph{Current RDT Implementation}
+In the current iteration of the RDT project, a single, monolithic \hcode{SafetySupervisor} class does not exist. Its functionalities are distributed:
+\begin{itemize}
+    \item The \hcode{MotionManager} handles RT-level fault detection (e.g., from HAL exceptions) and can initiate immediate local reactions like holding position or flagging an RT error.
+    \item The \hcode{RobotController} handles NRT-level fault detection (e.g., planner errors, SDO error flags set by \hcode{MotionManager}) and orchestrates higher-level responses like stopping the current task and updating the overall system mode in \hcode{StateData}.
+\end{itemize}
+This distribution is acceptable for a system of RDT's current scope. However, explicitly defining a \hcode{SafetySupervisor} component, even if it initially just consolidates existing logic, would be a logical next step towards a more formalized and verifiable safety architecture.
+
+\paragraph{The Hardware Safety PLC as the Ultimate Supervisor}
+In the realm of certified industrial safety, the role of the \hcode{SafetySupervisor} is often fulfilled by a dedicated piece of hardware: a \textbf{Safety PLC} (Programmable Logic Controller) or a certified safety controller integrated within the main robot controller.
+\begin{itemize}
+    \item \textbf{Independence and Redundancy:} A Safety PLC operates on its own processor, with its own dedicated I/O, and runs a certified, often simpler, operating system and programming environment (e.g., Ladder Logic, Function Block Diagram specifically for safety). It is intentionally kept separate from the main, complex robot control software.
+    \item \textbf{Direct Hardware Control:} It directly monitors critical safety inputs (E-Stop buttons, light curtains, safety door switches, safety-rated encoders) using redundant, dual-channel wiring. It directly controls safety outputs (power contactors for drives, safety brakes).
+    \item \textbf{Interaction with Main Controller:} The main robot controller (\hcode{RobotController} in our case) communicates with the Safety PLC. It informs the Safety PLC about the robot's intended operations (e.g., "I am about to enter Zone X"). The Safety PLC, based on its own inputs and safety logic, can then grant permission or, if a safety condition is violated, it can directly and independently trigger a safe stop (e.g., STO - Safe Torque Off, or SS1 - Safe Stop 1 on the drives), regardless of what the main controller software is doing.
+    \item \textbf{Example: KUKA's Architecture:} A KUKA KRC4/KRC5 controller often includes a KUKA Safety Controller (KSC) board, which is a Safety PLC. The main KSS software runs on the IPC and communicates with the KSC. The KSC handles all certified safety functions like SafeOperation (safe workspaces, tool monitoring). If KSS crashes, KSC can still ensure the robot stops safely.
+\end{itemize}
+Our conceptual software \hcode{SafetySupervisor} can be seen as a software precursor or a complementary layer to such a hardware-based safety system. It handles application-level safety logic and fault management that might not be covered by the certified hardware layer, or it acts as the primary safety brain in systems where a dedicated Safety PLC is not present (though this would limit the achievable safety certification level).
+
+\subsection{Advantages of a Conceptual \hcode{SafetySupervisor}}
+\label{subsec:safety_supervisor_advantages}
+Even if not implemented as a single class initially, thinking in terms of a \hcode{SafetySupervisor} provides benefits:
+
+\begin{itemize}
+    \item \textbf{Centralized Safety Logic:} It encourages centralizing the "if this error, then this reaction" logic, making it easier to review, test, and verify.
+    \item \textbf{Clear Interface Definition:} It forces us to define clear interfaces for how different components report errors and how the supervisor commands reactions.
+    \item \textbf{Modularity and Testability:} A dedicated safety module (even if conceptual) can be analyzed and tested in isolation.
+    \item \textbf{Path to Certification:} If formal safety certification is ever a goal, having the safety-related logic clearly separated and well-defined is a prerequisite.
+\end{itemize}
+
+The \hcode{SafetySupervisor}, whether a single class or a distributed set of responsibilities designed with a supervisory mindset, is a key element in elevating a control system from merely functional to truly robust and safe.
+
+\subsubsection{Summary of Section 10.4}
+\label{subsubsec:section10_4_summary}
+While RDT's current implementation distributes safety logic, the conceptual introduction of a \hcode{SafetySupervisor} module highlights a crucial architectural pattern for managing system-wide fault tolerance and safety.
+\begin{itemize}
+    \item \textbf{The Role:} To act as a central decision-maker that aggregates system health information and orchestrates appropriate safety responses based on a defined set of rules.
+    \item \textbf{Industrial Parallel:} In certified systems, this role is often fulfilled by a dedicated hardware Safety PLC, which operates independently of the main control software.
+    \item \textbf{Architectural Benefit:} Even as a conceptual entity, it promotes the centralization and formalization of safety logic, leading to a more verifiable and maintainable system.
+\end{itemize}
+Designing with a "safety supervisor" mindset, even if its functions are initially distributed, is a hallmark of mature system architecture.
+
+
+
+
+

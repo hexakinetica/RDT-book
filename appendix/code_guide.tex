@@ -1,0 +1,1767 @@
+% ===================================================================
+% Chapter 7: Implementing Architectural Patterns and Techniques in RDT
+% ===================================================================
+
+\chapter{Implementing Architectural Patterns and Techniques in RDT}
+\label{chap:implementation_patterns}
+
+In the previous chapters, we designed our system and defined its components. Now, we dive into the code, not merely to narrate it, but to dissect its "DNA"—the key architectural patterns and engineering techniques that make our system robust and flexible. This chapter is a practical guide where each concept is backed by real code from the RDT project. We will answer the question of "HOW?" at every step, referencing the "WHY?" from our architectural discussions.
+
+\section{Technique: Strong Typing as a First Line of Defense}
+\label{sec:strong_typing}
+
+A reliable house begins with a solid foundation. The foundation of our architecture is not its classes or algorithms, but its \textbf{type system}. Before writing any complex logic, we must first define the "alphabet" of our system: how we represent distance, angle, velocity, and pose. Instead of using primitive types like \hcode{double} for everything, we will introduce strong typing for physical quantities from the very beginning. This is one of the most effective, yet often underestimated, architectural decisions for building safe engineering software.
+
+\subsection{The Problem: The Ambiguity of \hcode{double}}
+\label{subsec:problem_of_double}
+
+Imagine a common scenario in robotics programming. You have a function that expects an angle in radians, but due to a simple oversight, it gets passed a value in degrees.
+
+\begin{minted}{cpp}
+// A function expecting radians
+void setJointAngle(double angle_rad) { /* ... */ }
+
+// A variable holding degrees
+double rotation_deg = 90.0;
+
+// The silent, catastrophic error
+setJointAngle(rotation_deg); // The robot will move to 90 radians (~5156 degrees)!
+\end{minted}
+\captionof{listing}{Example of incorrect unit conversion (degrees instead of radians).}
+\label{lst:unit-conversion-error}
+
+This is not a syntax error. The compiler will happily compile this code because, from its perspective, both values are just of type \hcode{double}. This is a \textit{logical} error, a flaw in the program's semantics. Such errors are incredibly difficult to catch during testing, as they might only manifest under specific conditions, but they can lead to catastrophic consequences in the physical world, from jerky movements to violent collisions. Another classic mistake is adding incompatible units, like trying to add a distance in meters to a time in seconds. The compiler will allow it, but the result will be meaningless nonsense.
+
+Our goal is to make such logical errors impossible to even compile. We want to move this entire class of bugs from the runtime stage (where they are dangerous and expensive to fix) to the compile-time stage (where they are caught automatically and for free).
+
+\subsection{The Solution: Creating "Numbers with Meaning"}
+\label{subsec:numbers_with_meaning}
+
+The solution lies in leveraging the power of the C++ type system to create our own distinct types for each physical quantity. We want to create "numbers with meaning," where the type itself carries the unit. The file \hcode{Units.h} in our project solves this problem. The idea is simple: instead of just numbers, we create "Meters," "Radians," and "Seconds."
+
+\paragraph{The \hcode{Unit} Template: A Generic Wrapper}
+At the core of our solution is a simple template class that wraps a primitive type (like \hcode{double}) but adds a "tag" to give it a unique type identity.
+
+\begin{minted}{cpp}
+template<typename Tag>
+class Unit {
+    double value_;
+public:
+    // Constructor
+    explicit constexpr Unit(double val) : value_(val) {}
+
+    // Getter for the raw value
+    constexpr double value() const { return value_; }
+
+    // Overloaded operators for arithmetic
+    Unit operator+(const Unit& other) const { return Unit(value_ + other.value_); }
+    Unit operator-(const Unit& other) const { return Unit(value_ - other.value_); }
+    // ... other operators like *, /, +=, -=, ==, <, etc.
+};
+\end{minted}
+\captionof{listing}{The core \hcode{Unit} template class from \hcode{Units.h}.}
+\label{lst:unit-template}
+
+This class on its own is just a wrapper. The magic happens when we combine it with unique, empty "tag" structures to create distinct, non-interchangeable types.
+
+\paragraph{Creating Concrete Types with Tags}
+Based on this template, we define our specific physical units. We first declare empty structs to serve as unique compile-time tags, and then use \hcode{using} aliases for convenience.
+
+\begin{minted}{cpp}
+// 1. Create unique, empty "tags" for each unit type
+struct MeterTag {};
+struct RadianTag {};
+struct SecondTag {};
+struct MeterPerSecondTag {};
+
+// 2. Define clear, readable type aliases using the Unit template and tags
+using Meters = Unit<MeterTag>;
+using Radians = Unit<RadianTag>;
+using Seconds = Unit<SecondTag>;
+using MetersPerSecond = Unit<MeterPerSecondTag>;
+\end{minted}
+\captionof{listing}{Defining concrete physical units in \hcode{Units.h}.}
+\label{lst:unit-types}
+
+What does this give us? \hcode{Meters} and \hcode{Seconds} are now two completely different, \textbf{incompatible} types from the compiler's point of view, even though they both hold a \hcode{double} inside. Our previous catastrophic error now becomes a compile-time error:
+
+\begin{minted}{cpp}
+Meters distance = Meters(10.0);
+Seconds time = Seconds(2.0);
+
+// COMPILE-TIME ERROR!
+// no match for 'operator+' (operand types are 'Meters' and 'Seconds')
+Meters new_distance = distance + time; 
+\end{minted}
+\captionof{listing}{}
+\label{[МЕТКА]}
+
+The compiler itself has become our first line of defense against a whole category of logical bugs.
+
+% --- Continuation of 7.1 ---
+
+\subsection{User-Defined Literals: Improving Readability and Usability}
+\label{subsec:user_defined_literals}
+
+Writing \hcode{Meters(10.5)} everywhere is correct, but it's cumbersome and can clutter the code. Modern C++ provides a wonderful feature to make this more elegant: \textbf{user-defined literals}. We can define our own suffixes (like \hcode{\_m} for meters or \hcode{\_rad} for radians) that the compiler will automatically use to construct our custom types.
+
+We define these literals in a dedicated namespace, for example \hcode{RDT::literals}, inside \hcode{Units.h}.
+
+\begin{minted}{cpp}
+namespace RDT::literals {
+
+// The operator"" suffix syntax defines the literal
+constexpr Meters operator"" _m(long double val) {
+    // We must explicitly cast from long double to the desired underlying type
+    return Meters(static_cast<double>(val));
+}
+
+constexpr Radians operator"" _rad(long double val) {
+    return Radians(static_cast<double>(val));
+}
+
+constexpr Seconds operator"" _s(long double val) {
+    return Seconds(static_cast<double>(val));
+}
+
+} // namespace RDT::literals
+\end{minted}
+\captionof{listing}{Implementation of user-defined literals in \hcode{Units.h}.}
+\label{lst:unit-literals}
+
+This allows us to write code that is almost indistinguishable from plain text, making it highly self-documenting:
+\begin{minted}{cpp}
+using namespace RDT::literals;
+
+Meters distance = 10.5_m;
+Radians angle = 1.57_rad;
+\end{minted}
+\captionof{listing}{Usage of user-defined literals.}
+\label{lst:unit-literals-usage}
+
+The code is not only safer, but also significantly easier to read and understand. An engineer looking at this code has no doubt about the units being used.
+
+\subsection{Assembling Structures: From Primitives to \hcode{DataTypes.h}}
+\label{subsec:data_types_assembly}
+
+With this solid foundation of safe types from \hcode{Units.h}, we can now start building more complex structures that describe the key entities of our system. This is the job of the \hcode{DataTypes.h} file. It is the "dictionary" of our project.
+
+Let's look at the two most basic structures: \hcode{Pose} for describing a Cartesian pose and \hcode{AxisSet} for describing the state of all robot joints.
+
+\begin{minted}{cpp}
+struct Pose {
+    Meters x = 0.0_m;
+    Meters y = 0.0_m;
+    Meters z = 0.0_m;
+    Radians rx = 0.0_rad;
+    Radians ry = 0.0_rad;
+    Radians rz = 0.0_rad;
+    // ... helper methods ...
+};
+
+class AxisSet {
+public:
+    using Container = std::array<Axis, ROBOT_AXES_COUNT>;
+    // ... methods and operators ...
+private:
+    Container data_;
+};
+\end{minted}
+\captionof{listing}{Core data structures from \hcode{DataTypes.h}.}
+\label{lst:core-data-types}
+
+Here we immediately see the benefits of our approach:
+\begin{itemize}
+    \item \textbf{Self-Documentation:} The fields \hcode{x, y, z} are of type \hcode{Meters}, not \hcode{double}. It's immediately clear what units they represent. The field \hcode{rx} is of type \hcode{Radians}, eliminating any ambiguity with degrees.
+    \item \textbf{Compile-Time Safety:} The compiler will prevent a programmer from accidentally assigning a value of type \hcode{Seconds} to the \hcode{x} coordinate.
+    \item \textbf{Default Initialization:} Notice the use of in-class member initializers (e.g., \hcode{= 0.0\_m}). This C++11/14 feature guarantees that any default-constructed object of this type will be in a predictable, valid (zero) state, preventing bugs related to uninitialized variables.
+\end{itemize}
+
+\begin{tipbox}{Architectural Insight: Preventive Defense}
+Using a strong type system for physical quantities is a form of \textbf{preventive defense}. We are shifting an entire class of potential logical runtime errors into the compile-time domain. An error caught by the compiler is an error that a developer or QA engineer never has to spend hours hunting for. It is one of the cheapest and most effective ways to increase the reliability of a complex system. It forces correctness by design, rather than hoping for it to emerge from testing.
+\end{tipbox}
+
+From this foundation, we build up all other data structures, like the master \hcode{TrajectoryPoint} object, which aggregates \hcode{Pose} and \hcode{AxisSet} objects. By ensuring that the lowest-level building blocks are type-safe, we guarantee that this safety property propagates up through the entire system architecture.
+
+
+
+
+% ===================================================================
+% Section 7.2: Pattern: The Blackboard (Single Source of Truth)
+% ===================================================================
+
+\section{Pattern: The Blackboard (Single Source of Truth)}
+\label{sec:pattern_blackboard}
+
+In a complex, multi-threaded NRT-domain like ours, where numerous components (\hcode{RobotController}, \hcode{TrajectoryPlanner}, \hcode{Adapter}) need to share and modify state information, the risk of creating a "spaghetti" architecture of direct dependencies is immense. As we established in Chapter 5, the solution is to decouple these components through a centralized, thread-safe data store—an implementation of the \textbf{Blackboard} architectural pattern. In our RDT project, this critical role is fulfilled by the \textbf{\hcode{StateData}} class.
+
+\hcode{StateData} is one of the most important, and at first glance, simplest classes in the project. It contains almost no complex logic. Its primary and sole purpose is to provide \textbf{thread-safe, centralized access to the current system state} for all interested components. It is the "school blackboard" where components read the work of others and post their own results, without ever needing to talk to each other directly.
+
+\subsection{Class Structure: The Data and Its "Locks"}
+\label{subsec:statedata_structure}
+
+Let's examine the header file \hcode{StateData.h}. We will see that it consists of two main parts: a set of private member variables that hold the actual state data, and a corresponding set of mutexes that protect this data.
+
+\begin{minted}{cpp}
+class StateData {
+public:
+    // Public getters and setters for each data group...
+    // e.g., void setFbPose(const TrajectoryPoint& pose);
+    //       TrajectoryPoint getFbPose() const;
+
+private:
+    // --- Data Fields ---
+    // Each field represents a logical piece of the system's state
+    TrajectoryPoint current_fb_pose_;     // Actual robot pose from feedback
+    TrajectoryPoint current_cmd_pose_;    // Target pose for the current command
+    ToolFrame       active_tool_;         // The currently active tool
+    BaseFrame       active_base_frame_;   // The currently active user frame
+    RobotMode       robot_mode_;          // The overall operational mode
+    // ... other state variables like error messages, etc.
+
+    // --- Mutexes ---
+    // A dedicated mutex for each logical data group
+    mutable std::shared_mutex mutex_fb_pose_;
+    mutable std::shared_mutex mutex_cmd_pose_;
+    mutable std::shared_mutex mutex_active_tool_;
+    mutable std::shared_mutex mutex_active_base_frame_;
+    mutable std::shared_mutex mutex_robot_mode_;
+    // ... other mutexes ...
+};
+\end{minted}
+\captionof{listing}{The structure of the \hcode{StateData} class from \hcode{StateData.h}.}
+\label{lst:statedata-structure}
+
+Two key implementation decisions are immediately apparent here.
+
+\paragraph{Implementation Technique 1: Granular Locking}
+The first crucial decision is that we are not using a single, global mutex to protect the entire \hcode{StateData} object. Instead, we use a separate, dedicated mutex for each logical piece of data. This technique is known as \textbf{fine-grained locking}.
+
+Why is this so important? In a high-performance system, it dramatically increases parallelism. Imagine a scenario without granular locking, using only one big mutex:
+\begin{enumerate}
+    \item The GUI thread wants to read the name of the active tool. It locks the global mutex.
+    \item At the same time, the \hcode{RobotController} thread finishes processing a feedback packet and needs to update the robot's current pose.
+    \item The \hcode{RobotController} thread attempts to lock the global mutex but finds it already locked by the GUI thread. It is now \textbf{blocked}, forced to wait, even though it wants to modify a completely unrelated piece of data (the robot pose).
+\end{enumerate}
+
+With fine-grained locking, this bottleneck disappears. The GUI thread locks only \hcode{mutex\_active\_tool\_}, while the \hcode{RobotController} thread locks only \hcode{mutex\_fb\_pose\_}. Since they are locking different mutexes, they can execute their operations \textbf{in parallel}, without blocking each other. This significantly improves the throughput and responsiveness of the NRT-domain.
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{Fine-Grained vs. Coarse-Grained Locking}
+        \textbf{Diagram illustrating parallel access with granular locks}
+        {\footnotesize
+        \begin{alltt}
+Thread A (GUI) -------> locks [mutex_tool] --> accesses [active_tool_]
+
+  // Concurrent access is possible as locks are on different data.
+
+Thread B (Controller) --> locks [mutex_pose] --> accesses [fb_pose_]
+        \end{alltt}
+        }
+
+        \textit{With fine-grained locks, Thread A and Thread B can execute concurrently. With a single coarse-grained lock, one would have to wait for the other, creating an unnecessary bottleneck.}
+    \end{infobox}
+            \vspace{0.3cm}
+    \caption{Granular locking allows multiple threads to access different parts of the shared state concurrently, maximizing parallelism.}
+    \label{fig:granular_locking}
+\end{figure}
+
+% --- Continuation of 7.2 ---
+
+\paragraph{Implementation Technique 2: The Read-Write Lock (\hcode{std::shared\_mutex})}
+The second key decision is the \textit{type} of mutex we use. Instead of a standard \hcode{std::mutex}, which only allows exclusive access, we use a \textbf{\hcode{std::shared\_mutex}}. This type of lock, which became standard in C++17, is also known as a "read-write lock." It is the perfect tool for implementing the Blackboard pattern, as it supports two distinct modes of locking:
+
+\begin{itemize}
+    \item \textbf{Shared Mode (Read Lock):} Multiple threads can acquire a lock on the mutex simultaneously in shared mode. This is ideal for "readers"—any component that only needs to read the state. For example, multiple GUI panels and a logging component can all read the current robot pose at the same time without blocking each other.
+    \item \textbf{Exclusive Mode (Write Lock):} Only one thread can acquire a lock on the mutex in exclusive mode. Once it is acquired, no other thread (neither reader nor writer) can acquire a lock on that mutex. This is ideal for "writers"—any component that needs to modify the state.
+\end{itemize}
+
+This mechanism is perfectly suited to our typical usage pattern: many components frequently read the state, while only a few components write to it infrequently. Using a \hcode{std::shared\_mutex} ensures that readers almost never have to wait, and access is only briefly blocked for all parties during the short moment a writer is modifying the data.
+
+\subsection{Access Mechanism: The Magic of RAII with Locks}
+\label{subsec:statedata-access}
+
+Now let's look at how these mutexes are used in the public getter and setter methods of \hcode{StateData}. The access is managed through two powerful C++ idioms: \textbf{RAII (Resource Acquisition Is Initialization)} and the lock guard pattern. We use \hcode{std::unique\_lock} for writing and \hcode{std::shared\_lock} for reading.
+
+\paragraph{The "Writer" Method (Setter)}
+Consider a typical setter method, such as \hcode{setActiveToolFrame}. Its job is to safely update the value of the active tool.
+
+\begin{minted}{cpp}
+void StateData::setActiveToolFrame(const ToolFrame& tool) {
+    // 1. Acquire exclusive lock
+    std::unique_lock<std::shared_mutex> lock(mutex_active_tool_);
+    
+    // 2. Perform the write operation
+    active_tool_ = tool;
+    
+} // 3. Lock is automatically released here by the destructor of 'lock'
+\end{minted}
+\captionof{listing}{Implementation of a "writer" method in \hcode{StateData}.}
+\label{lst:statedata-setter}
+
+Here is what happens step-by-step:
+\begin{enumerate}
+    \item An object of type \hcode{std::unique\_lock} is created on the stack. In its constructor, it attempts to acquire an \textbf{exclusive} lock on the provided mutex, \hcode{mutex\_active\_tool\_}.
+    \item If the mutex is free, the current thread acquires the lock and execution continues. If the mutex is already locked by any other thread (either a reader or another writer), this thread will block and wait until the mutex is released.
+    \item Once the lock is successfully acquired, the write operation (\hcode{active\_tool\_ = tool;}) is performed. At this moment, we are guaranteed to be the only thread with access to this specific piece of data.
+    \item \textbf{The Magic of RAII:} As soon as execution leaves the function's scope (either by a normal return or if an exception is thrown), the destructor for the \hcode{lock} object is automatically called. This destructor automatically releases the mutex. This is an extremely robust mechanism that guarantees the mutex will always be released, preventing deadlocks caused by forgetting to call an \hcode{unlock()} method.
+\end{enumerate}
+
+\paragraph{The "Reader" Method (Getter)}
+Now let's examine the corresponding getter, \hcode{getActiveToolFrame}.
+
+\begin{minted}{cpp}
+ToolFrame StateData::getActiveToolFrame() const {
+    // 1. Acquire shared lock
+    std::shared_lock<std::shared_mutex> lock(mutex_active_tool_);
+    
+    // 2. Perform the read operation (return a copy)
+    return active_tool_;
+    
+} // 3. Lock is automatically released here
+\end{minted}
+\captionof{listing}{Implementation of a "reader" method in \hcode{StateData}.}
+\label{lst:statedata-getter}
+
+The logic is very similar, but with one key difference:
+\begin{enumerate}
+    \item An object of type \hcode{std::shared\_lock} is created. In its constructor, it attempts to acquire a \textbf{shared} lock on the mutex.
+    \item The thread will only block if another thread currently holds an \textit{exclusive} (writer) lock. If the mutex is free or is already held by other \textit{readers}, this thread will also acquire a shared lock immediately and proceed without waiting.
+    \item The read operation (\hcode{return active\_tool\_;}) is performed. It's important to return a \textit{copy} of the data, not a reference, so that the data is still valid after the lock is released.
+    \item As before, the RAII pattern ensures the shared lock is automatically released when the function exits.
+\end{enumerate}
+
+\begin{tipbox}{\hcode{mutable} Keyword}
+You may have noticed that all mutexes in the class are declared with the \hcode{mutable} keyword. Why is this necessary?
+
+Getter methods, like \hcode{getActiveToolFrame()}, do not logically change the state of the object, so they are correctly declared as \hcode{const}. However, the act of locking and unlocking a mutex is, formally, a non-const operation on the mutex object itself. To resolve this conflict—to allow us to modify a member variable (the mutex) inside a \hcode{const} member function—we declare the mutexes as \hcode{mutable}. This tells the compiler: "This specific member is allowed to be changed, even inside a function that promises not to change anything else." This allows us to have a clean, \hcode{const}-correct interface while still ensuring thread safety.
+\end{tipbox}
+
+\subsubsection{Summary of Section 7.2}
+\label{subsubsec:section7-2-summary}
+The \hcode{StateData} class is a practical implementation of the Blackboard pattern for a multi-threaded C++ environment. It does not contain complex business logic, but its architecture is meticulously designed to solve two key challenges:
+\begin{itemize}
+    \item \textbf{Centralizing State:} It provides a single, consistent point of access to data for the entire system.
+    \item \textbf{Ensuring Thread Safety:} It uses modern C++ mechanisms—\hcode{std::shared\_mutex} with granular locking—to provide high-performance and safe parallel access to data from different threads.
+\end{itemize}
+It is a robust and reliable node that ties all the components of our NRT-domain together.
+
+
+% ===================================================================
+% Section 7.3: Pattern: The Adapter
+% ===================================================================
+
+\section{Pattern: The Adapter}
+\label{sec:pattern_adapter}
+
+We have designed a powerful, multi-threaded C++ core that controls the robot, and we have a set of independent GUI components written in the Qt framework. These two worlds are fundamentally incompatible. The C++ core knows nothing about Qt's signals, slots, or event loop. The Qt components know nothing about the internal methods or state management of our C++ objects. We need a bridge that can connect these two different worlds, translating messages and events from one to the other.
+
+This is the classic use case for the \textbf{Adapter} design pattern. The Adapter's purpose is to convert the interface of one class into an interface that another client expects. In our system, the \textbf{\hcode{Adapter\_RobotController}} (whose logic is largely implemented in our \hcode{RobotGUIController\_v1} class) acts as this crucial bridge. It is the single point of contact between the C++ backend and the Qt frontend.
+
+\subsection{The Adapter's Dual Role: Listener and Broadcaster}
+\label{subsec:adapter_dual_role}
+
+The Adapter works in two directions simultaneously, acting as both a "listener" for the GUI and a "broadcaster" for the core.
+
+\begin{enumerate}
+    \item \textbf{From GUI to Core (The Listener):} It provides Qt-slots that the GUI panels can connect to. When a user clicks a button, the GUI panel emits a signal. The Adapter "hears" this signal, translates the Qt-specific data into a standard C++ command, and calls the appropriate method on the system core (\hcode{RobotController}).
+    \item \textbf{From Core to GUI (The Broadcaster):} It periodically polls the system core's state via the \hcode{StateData} object. If it detects any changes in the robot's state, it translates this change into a Qt-signal and "broadcasts" it for any interested GUI panels to update their display.
+\end{enumerate}
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{The Adapter as a Two-Way Bridge}
+        \textbf{Diagram of the Adapter's role}
+
+        {\footnotesize
+        \begin{alltt}
++--------------+ --(1. Qt Signal)--> +---------+ --(2. C++ Call)--> +---------------+
+|  GUI Panels  |                     | Adapter |                    |  Robot Core   |
+| (TeachPanel) |                     |         |                    | (Controller,  |
++--------------+ <--(4. Qt Signal)-- +---------+ <--(3. Polling)--  |   StateData)  |
+ (State Update)                      (Compares)                      (State Source)
+        \end{alltt}
+        }
+    \end{infobox}
+            \vspace{0.3cm}
+    \caption{The Adapter acts as a bidirectional bridge. It listens for user actions from the GUI (1) and translates them into commands for the core (2). It also monitors the core's state (3) and broadcasts changes back to the GUI (4).}
+    \label{fig:adapter_role}
+\end{figure}
+
+Let's examine the implementation of these two data flow directions.
+
+\subsection{Direction 1: From GUI to Core (User Actions)}
+\label{subsec:gui_to_core}
+
+Consider the process of a user issuing a "Jog" command.
+
+\paragraph{Connecting the Panels}
+During application initialization, the main class connects the signals from the GUI panels to the slots of the Adapter. This is the only place where the GUI and the Adapter are explicitly linked.
+
+\begin{minted}{cpp}
+// From RobotGUIController_v1.h (acting as our Adapter)
+void RobotGUIController::connectJogPanel(JogControlPanel* panel) {
+    // When the jog panel requests an incremental joint move...
+    connect(panel, &JogControlPanel::jogIncrementJointRequested,
+            // ...call this slot on the Adapter object.
+            this, &RobotGUIController::onJogPanelIncrementJoint);
+}
+\end{minted}
+\captionof{listing}{Connecting a GUI panel's signal to the Adapter's slot.}
+\label{lst:adapter-connect}
+
+\paragraph{Implementing the Slot}
+The slot is where the translation happens. It receives the raw data from the GUI, enriches it with context, and dispatches a formal command to the core. The following is a conceptual implementation of what happens inside such a slot.
+
+\begin{minted}{cpp}
+// This logic resides within a method like onJogPanelIncrementJoint
+void Adapter_RobotController::onJogPanelIncrementJoint(int axis_idx, 
+                                                       double delta_deg, 
+                                                       double speed_ratio) 
+{
+    // 1. Get current state from the SDO to know the starting point
+    TrajectoryPoint current_state = state_data_->getFbPose();
+
+    // 2. Create a new command object
+    TrajectoryPoint jog_cmd;
+    jog_cmd.Header.motion_type = MotionType::PTP; // Jog is a PTP move
+    // ... fill other header fields like active tool/base from SDO ...
+
+    // 3. Calculate the target joint configuration
+    AxisSet target_joints = current_state.Feedback.pose_joint;
+    target_joints.at(axis_idx).position += Degrees(delta_deg).toRadians();
+    jog_cmd.Command.pose_joint = target_joints;
+    
+    // 4. Dispatch the formal command to the system core
+    robot_controller_core_->executeMotionToTarget(jog_cmd);
+}
+\end{minted}
+\captionof{listing}{Conceptual implementation of the Adapter's slot.}
+\label{lst:adapter-slot-impl}
+
+In this role, the Adapter acts as a client to the \hcode{StateData} (reading state) and the \hcode{RobotController} (sending commands), while acting as a server for the GUI (providing slots).
+
+% --- Continuation of 7.3 ---
+
+\subsection{Direction 2: From Core to GUI (State Updates)}
+\label{subsec:core_to_gui}
+
+This direction is architecturally more interesting. The C++ core knows nothing about Qt and cannot emit Qt signals directly. So how does the GUI learn about changes in the robot's state? The Adapter solves this using a simple but highly effective and robust pattern: \textbf{Polling and Caching}.
+
+\paragraph{The Polling Mechanism: \hcode{QTimer} and \hcode{StateData}}
+In its constructor, the \hcode{Adapter\_RobotController} creates and configures a \hcode{QTimer}.
+
+% --- ИСПОЛЬЗУЕМ MINTED ---
+\begin{figure}[H]
+\captionsetup{type=lstlisting}
+\setlength{\abovecaptionskip}{-15pt}
+\begin{minted}{cpp}
+// Conceptual code from the Adapter's constructor
+update_timer_ = new QTimer(this);
+connect(update_timer_, &QTimer::timeout,
+        this, &Adapter_RobotController::pollStateDataAndUpdateGUI);
+update_timer_->start(100); // Poll 10 times per second
+\end{minted}
+\caption{Setting up the polling timer in the Adapter.}
+\label{lst:adapter-timer}
+\end{figure}
+% -------------------------
+
+Now, every 100 milliseconds, the Qt event loop will automatically call the slot \hcode{pollStateDataAndUpdateGUI}. This slot is the heart of the feedback path to the GUI. Its logic is as follows:
+
+\begin{enumerate}
+    \item \textbf{Read all current state:} The slot accesses the \hcode{StateData} object and reads all key pieces of information: the actual robot pose, the current robot mode, any error messages, etc.
+    \item \textbf{Compare with cached state:} The Adapter maintains private member variables that store a \textit{copy} of the state it read during the \textit{previous} polling cycle (e.g., \hcode{last\_polled\_robot\_mode\_}). It compares the newly read values with these cached values.
+    \item \textbf{Emit signals only on change:} If, and only if, a piece of data has changed, the Adapter emits the corresponding Qt signal. For example, if \hcode{last\_polled\_robot\_mode\_ != new\_robot\_mode}, it emits \hcode{robotModeChanged(new\_robot\_mode)}. If nothing has changed, no signals are emitted.
+    \item \textbf{Update the cache:} Finally, it updates its internal cached state with the new values, preparing for the next poll.
+\end{enumerate}
+
+\begin{minted}{cpp}
+void Adapter_RobotController::pollStateDataAndUpdateGUI() {
+    // 1. Read new state from SDO
+    RobotMode new_robot_mode = state_data_->getRobotMode();
+    Pose new_tcp_pose = state_data_->getFbPose().Feedback.pose_cart;
+
+    // 2. Compare with cached state and emit signal on change (for mode)
+    if (last_polled_robot_mode_ != new_robot_mode) {
+        emit robotModeChanged(new_robot_mode);
+        // 3. Update cache
+        last_polled_robot_mode_ = new_robot_mode;
+    }
+    
+    // ... similar comparison and signal emission for pose ...
+}
+\end{minted}
+\captionof{listing}{Conceptual logic of the polling slot.}
+\label{lst:adapter-poll-slot}
+
+\begin{tipbox}{Power of Polling and Caching}
+Why go through this seemingly indirect process of polling and comparing? Why not have the core directly emit signals?
+\begin{itemize}
+    \item \textbf{Decoupling:} It completely isolates the core from the GUI framework. The core doesn't need to know about Qt, signals, slots, or event loops. This is a clean separation.
+    \item \textbf{Performance (Preventing Signal Storms):} This is the most critical reason. Imagine if the core emitted a signal every time the robot's pose changed (i.e., every 2 ms). This would flood the GUI event loop with thousands of signals per second. The GUI would spend all its time redrawing, becoming sluggish and unresponsive. It would be a "signal storm." The polling mechanism acts as a \textbf{rate limiter} and a \textbf{change detector}. The GUI is updated only when necessary and at a reasonable frequency (e.g., 10-20 Hz), which is more than enough for smooth visual feedback.
+    \item \textbf{Clean Logic:} This approach results in clean, reactive GUI components. The panels are completely passive. They simply update themselves when they are told that the data they care about has changed. All logic for detecting that change resides in one place: the Adapter.
+\end{itemize}
+\end{tipbox}
+
+\subsection{Integrating Custom Types with Qt's Meta-Object System}
+\label{subsec:qt_metatypes}
+
+There is one final, but crucial, detail. For Qt's signal/slot mechanism to be able to handle our custom C++ data structures (like \hcode{Pose} or \hcode{AxisSet}) in queued connections, it needs to know about them. It needs to know how to create, copy, and destroy them.
+
+We achieve this by registering our types with Qt's \textbf{Meta-Object System}. This is typically done once at the start of the application in a dedicated header file, say \hcode{RDT\_Qt\_MetaTypes.h}, using a special macro.
+
+\begin{minted}{cpp}
+// Inside RDT_Qt_MetaTypes.h
+#include <QMetaType>
+#include "DataTypes.h" // Our custom types
+
+// Register each type that will be passed in a signal
+Q_DECLARE_METATYPE(RDT::Pose)
+Q_DECLARE_METATYPE(RDT::AxisSet)
+// ... and so on for other types
+\end{minted}
+\captionof{listing}{Registering custom types for use in Qt signals.}
+\label{lst:metatypes}
+
+
+This simple step makes our custom, strongly-typed C++ objects first-class citizens in the Qt ecosystem, allowing for seamless and type-safe communication between the Adapter and the GUI panels.
+
+\subsubsection{Summary of Section 7.3}
+\label{subsubsec:section7_3_summary}
+The Adapter pattern, as implemented in our \hcode{Adapter\_RobotController}, is the glue that robustly and flexibly connects our C++ core and Qt frontend.
+\begin{itemize}
+    \item \textbf{The Result:} We have a fully decoupled GUI and backend. We can completely replace the entire GUI without changing a single line of code in the core, and vice-versa.
+    \item \textbf{Key Decisions:}
+    \begin{itemize}
+        \item Using Qt slots as a clean entry point for user commands into the system.
+        \item Using a polling-and-caching mechanism (\hcode{QTimer}) to efficiently update the GUI from the core state, preventing signal storms and ensuring a responsive user experience.
+        \item Registering custom C++ types with the Qt Meta-Object system to enable seamless, type-safe communication.
+    \end{itemize}
+\end{itemize}
+This component is a prime example of proper boundary design between different technological stacks within a single application.
+
+
+
+
+
+
+
+
+
+
+
+% ===================================================================
+% Section 7.4: Pattern: The Strategy
+% ===================================================================
+
+\section{Pattern: The Strategy}
+\label{sec:pattern_strategy}
+
+A robot needs to perform various types of movements. A simple point-to-point move (\hcode{PTP}) prioritizes speed, while its Cartesian path is unimportant. A linear move (\hcode{LIN}) requires the tool to follow a perfectly straight line. A circular move (\hcode{CIRC}) follows a precise arc. In the future, we might want to add more complex movements, like splines or dynamically adjusted paths.
+
+How can we design our planner to accommodate all these different movement algorithms without becoming a monolithic, unmanageable block of \hcode{if-else} statements? The answer lies in the \textbf{Strategy} design pattern.
+
+The Strategy pattern defines a family of algorithms, encapsulates each one, and makes them interchangeable. It lets the algorithm vary independently from the clients that use it. In our architecture, each type of motion calculation is a distinct "strategy." The \hcode{TrajectoryInterpolator} is the "context" that uses one of these strategies to do its job.
+
+\subsection{The \hcode{MotionProfile} Interface: A Contract for Movement}
+\label{subsec:motionprofile_interface}
+
+The foundation of the Strategy pattern is an abstract interface that defines a common contract for all concrete strategies. In our RDT project, this role is played by the abstract class \textbf{\hcode{MotionProfile}}.
+
+\begin{minted}{cpp}
+// Base interface for any motion profile strategy
+class MotionProfile {
+public:
+    virtual ~MotionProfile() = default;
+
+    // Returns the total duration of this motion segment
+    virtual double duration() const = 0;
+
+    // Returns the type of motion this profile represents
+    virtual MotionType type() const = 0;
+
+    // Checks if the profile is completed at a given time t
+    virtual bool isDone(double t) const;
+
+    // The core strategy methods: interpolate the state at time t.
+    // A concrete strategy will override ONE of these.
+    virtual std::optional<AxisSet> interpolateJoints(double t) const {
+        return std::nullopt;
+    }
+    virtual std::optional<Pose> interpolateCartesian(double t) const {
+        return std::nullopt;
+    }
+};
+\end{minted}
+\captionof{listing}{The abstract \hcode{MotionProfile} interface from \hcode{MotionProfile.h}.}
+\label{lst:motionprofile-interface}
+
+This interface is a clear contract. Any class that claims to be a motion generation strategy \textit{must} be able to report its total duration and type, and it \textit{must} provide a way to calculate the robot's state at any given time \hcode{t} within that duration. Notice that there are two separate interpolation methods: \hcode{interpolateJoints} and \hcode{interpolateCartesian}. This is a key design choice. A joint-space motion strategy (like PTP) will implement the former, while a Cartesian-space strategy (like LIN) will implement the latter. The \hcode{TrajectoryInterpolator}, which uses this interface, will know which method to call based on the motion type.
+
+\subsection{Concrete Strategies: \hcode{TrapProfileJoint} and \hcode{TrapProfileLIN}}
+\label{subsec:concrete_strategies}
+
+With the contract defined, we can now create concrete implementations for each type of motion. These classes inherit from \hcode{MotionProfile} and encapsulate the specific mathematics for their respective movement type.
+
+\paragraph{\hcode{TrapProfileJoint}: The Strategy for PTP Moves}
+This class is responsible for generating a simple, time-parameterized, point-to-point move in joint space.
+
+\begin{itemize}
+    \item \textbf{Encapsulated Logic:} In its constructor, it takes the start and end joint configurations. It calculates the required displacement for each axis, finds the "leading axis" (the one with the largest distance to travel), and then uses the \hcode{TrapezoidalProfileMath} utility to calculate a velocity profile for that leading axis.
+    \item \textbf{Fulfilling the Contract:} It overrides the \hcode{interpolateJoints(double t)} method. Inside this method, it first asks its internal \hcode{TrapezoidalProfileMath} object for the normalized path completion (\(s(t)\), a value from 0 to 1) at time \hcode{t}. Then, it simply uses linear interpolation for each joint: 
+    \[
+    \theta_i(t) = \theta_{i,start} + s(t) \cdot (\theta_{i,end} - \theta_{i,start})
+    \]
+    It returns the resulting \hcode{AxisSet} of joint angles. The \hcode{interpolateCartesian} method is left with its default implementation, returning \hcode{std::nullopt}.
+\end{itemize}
+
+\paragraph{\hcode{TrapProfileLIN}: The Strategy for Linear Moves}
+This class handles the more complex task of generating a straight-line Cartesian motion.
+
+\begin{itemize}
+    \item \textbf{Encapsulated Logic:} Its constructor takes the start and end \textit{Cartesian poses} of the flange. It calculates the total linear distance to be traveled. For orientation, it converts the start and end Euler angles into Quaternions (\hcode{q\_start}, \hcode{q\_end}) to prepare for smooth rotational interpolation. It then uses \hcode{TrapezoidalProfileMath} to calculate a velocity profile based on the linear distance.
+    \item \textbf{Fulfilling the Contract:} It overrides the \hcode{interpolateCartesian(double t)} method. Inside, it also gets the normalized path completion factor \(s(t)\) from its math utility. It then performs two separate interpolations:
+    \begin{enumerate}
+        \item It linearly interpolates the XYZ position along the straight line between the start and end points.
+        \item It uses Spherical Linear Interpolation (\textbf{SLERP}) on its start and end quaternions to find the intermediate orientation: \hcode{q\_start.slerp(s(t), q\_end)}.
+    \end{enumerate}
+    Finally, it combines the interpolated position and orientation into a \hcode{Pose} object and returns it. The \hcode{interpolateJoints} method is left unimplemented.
+\end{itemize}
+
+% --- Continuation of 7.4 ---
+
+\subsection{The Context: \hcode{TrajectoryInterpolator} as a Strategy User}
+\label{subsec:interpolator_context}
+
+The \hcode{TrajectoryInterpolator} class is the "Context" in the Strategy pattern. It is the component that \textit{uses} a motion profile strategy, but it does not know the details of any specific one. It only interacts with them through the abstract \hcode{MotionProfile} interface.
+
+Its primary data member is a unique pointer to the abstract base class:
+\begin{verbatim}
+std::unique_ptr<MotionProfile> current_profile_;
+\end{verbatim}
+
+When the \hcode{TrajectoryPlanner} needs to generate points, it calls the \hcode{nextPoint(dt)} method on the interpolator. The interpolator, in turn, simply calls the appropriate method on its \textit{current} strategy object:
+
+\begin{minted}{cpp}
+// Inside TrajectoryInterpolator::nextPoint()
+if (current_profile_->type() == MotionType::LIN) {
+    return current_profile_->interpolateCartesian(t);
+} else {
+    return current_profile_->interpolateJoints(t);
+}
+\end{minted}
+\captionof{listing}{Interpolation logic in \hcode{TrajectoryInterpolator}.}
+\label{lst:interpolation-logic}
+
+The interpolator is completely decoupled from the specific algorithms. It doesn't know or care how a trapezoidal or S-curve profile is calculated, or how SLERP works. It just knows that it has an object that conforms to the \hcode{MotionProfile} contract and can provide a state for a given time \hcode{t}.
+
+\paragraph{Combining Patterns: The Factory Method for Strategy Creation}
+This raises a question: who creates the concrete strategy objects? The \hcode{TrajectoryInterpolator} does. When the planner calls its \hcode{loadSegment(...)} method, the interpolator needs to create the correct \hcode{MotionProfile} object based on the requested motion type. This is a perfect use case for another classic design pattern: the \textbf{Factory Method}.
+
+\begin{minted}{cpp}
+void TrajectoryInterpolator::loadSegment(const TrajectoryPoint& start,
+                                         const TrajectoryPoint& target) 
+{
+    // ... reset state ...
+    MotionType type = target.Header.motion_type;
+    // The "Factory" part: decide which object to create
+    switch (type) {
+        case MotionType::PTP:
+        case MotionType::JOINT:
+            current_profile_ = std::make_unique<TrapProfileJoint>(
+                start.Command.pose_joint, target.Command.pose_joint, ...);
+            break;
+        case MotionType::LIN:
+            current_profile_ = std::make_unique<TrapProfileLIN>(
+                start.Command.pose_cart, target.Command.pose_cart, ...);
+            break;
+        case MotionType::SPLINE: // Future extension
+            // current_profile_ = std::make_unique<SplineProfile>(...);
+            // break;      
+        default:
+            throw std::runtime_error("Unsupported motion type for profile creation.");
+    }
+    profile_loaded_ = true;
+}
+\end{minted}
+\captionof{listing}{The \hcode{loadSegment} method as a Factory Method from \hcode{TrajectoryInterpolator.cpp}.}
+\label{lst:factory-method}
+
+This combination of Strategy and Factory Method patterns creates a system that is remarkably flexible and extensible.
+
+\begin{tipbox}{Architectural Insight: Preparing for the Future}
+What if, in the future, we want to add a new, more complex type of movement, like a spline trajectory? The architectural changes required are minimal and localized, thanks to this design.
+\begin{enumerate}
+    \item We create a new class, \hcode{SplineProfile}, that inherits from \hcode{MotionProfile} and encapsulates all the complex mathematics for spline interpolation.
+    \item We add one more \hcode{case} to the \hcode{switch} statement in the \hcode{loadSegment} factory method to handle the creation of our new \hcode{SplineProfile} object.
+\end{enumerate}
+
+ No other part of the system needs to be touched. The \hcode{TrajectoryPlanner} and \hcode{TrajectoryInterpolator} will continue to work with the new strategy through the abstract \hcode{MotionProfile} interface, completely unaware of the complex spline math happening under the hood. This is the true power of programming to an interface, not an implementation.
+\end{tipbox}
+
+\subsubsection{Summary of Section 7.4}
+\label{subsubsec:section7_4_summary}
+The Strategy pattern, in conjunction with the Factory Method, provides the architectural backbone for motion planning in RDT.
+\begin{itemize}
+    \item \textbf{The Result:} We have a system where the core planning logic is decoupled from the specific algorithms used to generate different types of motion. This makes the system highly extensible and maintainable.
+    \item \textbf{Key Implementations:}
+    \begin{itemize}
+        \item The abstract \hcode{MotionProfile} class defines the common contract for all movement strategies.
+        \item Concrete classes like \hcode{TrapProfileJoint} and \hcode{TrapProfileLIN} encapsulate the specific algorithms.
+        \item The \hcode{TrajectoryInterpolator} acts as the context that uses these strategies and as a factory that creates them based on user commands.
+    \end{itemize}
+\end{itemize}
+This clean, object-oriented design allows us to easily add new, complex motion capabilities in the future without risking the stability of the existing system.
+
+
+
+
+
+
+
+
+
+
+% ===================================================================
+% Section 7.5: Technique: Lock-Free Programming for the RT/NRT Bridge
+% ===================================================================
+
+\section{Technique: Lock-Free Programming for the RT/NRT Bridge}
+\label{sec:technique_lock_free}
+
+The data structure that bridges the real-time (RT) and non-real-time (NRT) domains is arguably the most critical piece of code in the entire control system. A flaw here can compromise the determinism and safety of the whole architecture. The primary challenge is to ensure that data can be passed between the two threads (the NRT-planner and the RT-motion-manager) safely and without blocking.
+
+\subsection{The Mortal Danger of Mutexes at the RT/NRT Boundary}
+\label{subsec:mutex_danger}
+
+A programmer's first instinct for thread-safe communication is to use a standard mutex (\hcode{std::mutex}). One would wrap a standard queue (\hcode{std::queue}) and protect its \hcode{push} and \hcode{pop} operations with a lock guard. In our system, this would lead to catastrophic failure. The reason is a dreaded real-time phenomenon called \textbf{priority inversion}.
+
+Let's walk through a disaster scenario with a mutex-protected queue:
+\begin{enumerate}
+    \item The RT-thread (high priority) wakes up and needs to get a new setpoint. It locks the mutex to call \hcode{pop()}.
+    \item \textbf{The OS intervenes.} The real-time operating system's scheduler decides that the RT-thread's time slice is up and preempts it, putting it to sleep. Crucially, the RT-thread is put to sleep \textit{while still holding the lock on the queue}.
+    \item The NRT-thread (low priority) is now running. It finishes calculating a new batch of setpoints and wants to add them to the queue. It tries to lock the same mutex to call \hcode{push()}.
+    \item \textbf{Deadly Block.} The NRT-thread is now blocked, waiting for the mutex. But the mutex is held by the RT-thread, which is currently asleep and cannot release it.
+    \item \textbf{The Inversion.} The situation gets worse. If another medium-priority thread becomes ready to run, the OS will schedule it, further delaying the low-priority NRT-thread. The result is a complete inversion of priorities: a low-priority thread (and any medium-priority threads) is effectively preventing the highest-priority thread in the system from running. The RT-thread will miss its deadline, the robot will stutter, and the watchdog timer will eventually trigger a system-wide fault.
+\end{enumerate}
+
+\begin{dangerbox}{Mutexes on the Boundary are Unacceptable}
+Any locking mechanism that can cause a high-priority thread to wait for a low-priority thread is unacceptable at the RT/NRT boundary. The solution must be \textbf{lock-free}—it must guarantee that the threads can make progress without ever blocking each other.
+\end{dangerbox}
+
+\subsection{The Solution: A Lock-Free SPSC Queue}
+\label{subsec:lock_free_spsc}
+
+To solve this problem, we implement a specialized data structure: a \textbf{Single-Producer, Single-Consumer (SPSC) lock-free queue}. It's designed for exactly one scenario: one dedicated thread (our NRT-planner) will only ever push items, and one other dedicated thread (our RT-motion-manager) will only ever pop items.
+
+Our \hcode{TrajectoryQueue.h} contains this implementation. It's a template class built on a circular buffer (a simple array) and two atomic indices: \hcode{head\_} for reading and \hcode{tail\_} for writing.
+
+\begin{minted}{cpp}
+template <typename T, std::size_t Capacity = 256>
+class TrajectoryQueue {
+    // ...
+private:
+    // The underlying storage array
+    std::unique_ptr<T[]> buffer_;
+    // The read index, only modified by the consumer thread (RT)
+    std::atomic<std::size_t> head_;
+    // The write index, only modified by the producer thread (NRT)
+    std::atomic<std::size_t> tail_;
+};
+\end{minted}
+\captionof{listing}{Key fields of the \hcode{TrajectoryQueue} class.}
+\label{lst:spsc-fields}
+
+The key insight is that the producer and consumer threads \textbf{never modify the same index}. The producer only ever writes to \hcode{tail\_}, and the consumer only ever writes to \hcode{head\_}. This is what makes a lock-free implementation possible. The "magic" lies in how they read each other's indices to check if the queue is full or empty, and this is where memory ordering becomes critically important.
+% --- Continuation of 7.5 ---
+
+\subsection{Dissecting the Code: \hcode{try\_push} and \hcode{try\_pop}}
+\label{subsec:dissecting_lock_free}
+
+Let's analyze the implementation of the two core methods.
+
+\paragraph{The Producer's Side: \hcode{try\_push}}
+This method is called by the NRT-thread to add an item to the queue.
+
+\begin{minted}{cpp}
+bool TrajectoryQueue::try_push(const T& item) {
+    // 1. Load the current tail index. Relaxed order is fine for this read.
+    const auto current_tail = tail_.load(std::memory_order_relaxed);
+    // 2. Calculate where the next tail will be.
+    const auto next_tail = increment(current_tail);
+    // 3. Check for "full" condition. Must use 'acquire' memory order!
+    if (next_tail == head_.load(std::memory_order_acquire)) {
+        return false; // The queue is full.
+    }
+    // 4. Place the item into the buffer at the current tail position.
+    buffer_[current_tail] = item;
+    // 5. Publish the new tail index. Must use 'release' memory order!
+    tail_.store(next_tail, std::memory_order_release);
+    return true;
+}
+\end{minted}
+\captionof{listing}{Implementation of the lock-free \hcode{try\_push} method.}
+\label{lst:try-push}
+
+\paragraph{The Consumer's Side: \hcode{try\_pop}}
+This method is called by the RT-thread to retrieve an item. Its structure is symmetric to \hcode{try\_push}.
+
+\begin{minted}{cpp}
+bool TrajectoryQueue::try_pop(T& out) {
+    // 1. Load the current head index. Relaxed order is fine.
+    const auto current_head = head_.load(std::memory_order_relaxed);
+    // 2. Check for "empty" condition. Must use 'acquire' memory order!
+    if (current_head == tail_.load(std::memory_order_acquire)) {
+        return false; // The queue is empty.
+    }
+    // 3. Retrieve the item from the buffer.
+    out = buffer_[current_head];
+    // 4. Publish the new head index. Must use 'release' memory order!
+    head_.store(increment(current_head), std::memory_order_release);
+    return true;
+}
+\end{minted}
+\captionof{listing}{Implementation of the lock-free \hcode{try\_pop} method.}
+\label{lst:try-pop}
+
+This code looks simple, but its correctness hinges entirely on the subtle but crucial \hcode{std::memory\_order} arguments. Without them, the code would fail unpredictably on many multi-core systems.
+
+\subsection{Critical Role of Memory Barriers}
+\label{subsec:memory_barriers}
+
+What are \hcode{std::memory\_order\_acquire} and \hcode{std::memory\_order\_release}? They are \textbf{memory barriers}. They are instructions to the compiler and the CPU about reordering operations. Modern compilers and CPUs aggressively reorder instructions to optimize performance. On a single-threaded program, you would never notice. In a multi-threaded context, this reordering can be fatal.
+
+Let's analyze the producer-consumer relationship with memory barriers:
+
+\begin{description}
+    \item[\textbf{The Producer's Contract (\hcode{release})}]
+    When the producer thread calls \hcode{tail\_.store(next\_tail, std::memory\_order\_release)}, it makes a promise to the system. The \hcode{release} barrier guarantees that \textbf{all memory writes} that happened in the code \textit{before} this point (specifically, writing the item to \hcode{buffer\_[current\_tail]}) will be completed and visible to other threads \textit{before} the write to \hcode{tail\_} itself becomes visible. It prevents the compiler/CPU from reordering the operations like this:
+    \begin{enumerate}
+        \item \textit{(Wrong)} Update \hcode{tail\_} index first.
+        \item \textit{(Wrong)} Then write the data to \hcode{buffer\_}.
+    \end{enumerate}
+    If this reordering happened, the consumer might see the updated \hcode{tail\_}, think there's new data, but read old, garbage data from the buffer slot because the actual write hasn't happened yet. The release barrier makes the data "publication" safe.
+
+    \item[\textbf{The Consumer's Contract (\hcode{acquire})}]
+    When the consumer thread calls \hcode{tail\_.load(std::memory\_order\_acquire)}, it also makes a promise. The \hcode{acquire} barrier guarantees that \textbf{all memory reads} that happen in the code \textit{after} this point (specifically, reading from \hcode{buffer\_[current\_head]}) will happen \textit{after} the read of \hcode{tail\_} is complete. It prevents this reordering:
+    \begin{enumerate}
+        \item \textit{(Wrong)} Read from \hcode{buffer\_} first (potentially stale data).
+        \item \textit{(Wrong)} Then read the \hcode{tail\_} index.
+    \end{enumerate}
+    
+    \item[\textbf{The Handshake}]
+    The acquire-release pair forms a synchronization "handshake" between the two threads. The \hcode{release} operation by the producer synchronizes-with the \hcode{acquire} operation by the consumer. This ensures that if the consumer sees the value written by the producer's \hcode{store-release}, it is guaranteed to also see all memory writes that happened before it. In simple terms: **if the consumer sees the new `tail` index, it is guaranteed to see the new data in the buffer.**
+\end{description}
+
+\begin{principlebox}{Principle: The Key to Lock-Free Communication}
+Correctly using memory barriers is one of the most complex topics in concurrent programming. However, understanding this acquire-release pairing is the key to understanding how all high-performance lock-free data structures work. It is the fundamental mechanism that allows us to build a safe and non-blocking bridge between the chaotic NRT world and the deterministic RT world.
+\end{principlebox}
+
+\subsubsection{Summary of Section 7.5}
+\label{subsubsec:section7_5_summary}
+This section delved into one of the most technically demanding, yet architecturally crucial, parts of our system.
+\begin{itemize}
+    \item \textbf{The Result:} We have a thread-safe, non-blocking, high-performance queue that allows the NRT and RT domains to communicate without risking priority inversion or deadlocks.
+    \item \textbf{Key Techniques:}
+    \begin{itemize}
+        \item The implementation of a lock-free Single-Producer, Single-Consumer (SPSC) queue using \hcode{std::atomic} indices.
+        \item The critical use of acquire-release memory barriers to ensure correct synchronization and visibility of data between threads, preventing unsafe compiler and CPU instruction reordering.
+    \end{itemize}
+\end{itemize}
+This technique is the bedrock of our system's real-time performance and reliability.
+
+
+% ===================================================================
+% Section 7.6: Pattern: Dependency Injection
+% ===================================================================
+
+\section{Pattern: Dependency Injection}
+\label{sec:pattern_dependency_injection}
+
+A component rarely works in isolation; it almost always needs to collaborate with other components to accomplish its task. A \hcode{TrajectoryPlanner} needs a \hcode{KinematicSolver} to check for reachability. A \hcode{RobotController} needs a \hcode{TrajectoryPlanner} to generate paths and a \hcode{MotionManager} to execute them. This collaboration creates dependencies. The way we manage these dependencies is one ofthe most critical architectural decisions, directly impacting the system's flexibility, modularity, and, most importantly, its testability.
+
+\subsection{The Anti-Pattern: Hard-Coded Dependencies}
+\label{subsec:hard_coded_dependencies}
+
+The most straightforward, but most damaging, way to manage a dependency is for a component to create its own collaborators. Imagine our \hcode{TrajectoryPlanner}'s constructor looked like this:
+
+\begin{minted}{cpp}
+// ANTI-PATTERN: Do NOT do this!
+TrajectoryPlanner::TrajectoryPlanner() {
+    // The planner creates its own, specific instance of the solver.
+    solver_ = std::make_shared<KdlKinematicSolver>(KinematicModel::createKR6R900());
+}
+\end{minted}
+\captionof{listing}{An example of a hard-coded dependency (Anti-Pattern).}
+\label{lst:hard-coded-dependency}
+
+
+At first glance, this seems convenient. The \hcode{TrajectoryPlanner} is self-contained and knows how to build everything it needs. However, this design has disastrous consequences:
+\begin{itemize}
+    \item \textbf{It is Inflexible.} The \hcode{TrajectoryPlanner} is now permanently welded to the \hcode{KdlKinematicSolver}. What if we want to try a different, faster IK algorithm, like IKFast? We would have to modify the \hcode{TrajectoryPlanner}'s source code. What if we want to use a different robot model? Again, we must change the planner's code. The component is no longer a general-purpose planner; it's a "KUKA KR6 R900 KDL Planner."
+    \item \textbf{It is Untestable.} This is the most severe problem. How can we write a unit test for the \hcode{TrajectoryPlanner}? We can't! To even construct a \hcode{TrajectoryPlanner} object, we are forced to also construct a full-blown \hcode{KdlKinematicSolver} and a \hcode{KinematicModel}. We cannot test the planner's logic in isolation. A unit test for the planner is now a complex integration test for half the system.
+\end{itemize}
+
+\subsection{The Solution: Inversion of Control and Dependency Injection}
+\label{subsec:inversion_of_control}
+
+The solution is to invert the control over dependency creation. A component should \textit{not} create its own dependencies. Instead, it should receive them from an external, higher-level entity. This principle is called \textbf{Inversion of Control (IoC)}. The mechanism by which the dependencies are provided to the component is called \textbf{Dependency Injection (DI)}.
+
+Instead of creating the solver itself, our \hcode{TrajectoryPlanner} declares that it \textit{requires} a component that fulfills the \hcode{KinematicSolver} contract and receives it in its constructor.
+
+\begin{minted}{cpp}
+// CORRECT PATTERN: Dependencies are "injected" from the outside.
+TrajectoryPlanner::TrajectoryPlanner(std::shared_ptr<KinematicSolver> solver,
+                                     std::shared_ptr<TrajectoryInterpolator> interpolator)
+    : solver_(std::move(solver)),
+      interpolator_(std::move(interpolator))
+{
+    // The planner now depends on the ABSTRACT interface, not a concrete class.
+    if (!solver_ || !interpolator_) {
+        throw std::invalid_argument("Planner dependencies cannot be null.");
+    }
+}
+\end{minted}
+\captionof{listing}{Dependency Injection via the constructor in RDT.}
+\label{lst:constructor-injection}
+
+This simple change fundamentally alters the architecture for the better.
+
+\paragraph{The Power of Constructor Injection}
+By receiving its dependencies as arguments in the constructor, the \hcode{TrajectoryPlanner} achieves several key architectural goals:
+\begin{enumerate}
+    \item \textbf{Decoupling:} The planner is now completely decoupled from any concrete implementation of the solver. It only knows about the abstract \hcode{KinematicSolver} interface. It doesn't know or care if it's talking to \hcode{KdlKinematicSolver}, \hcode{IKFastKinematicSolver}, or a fake \hcode{MockSolver} during a test.
+    \item \textbf{Explicit Dependencies:} The component's dependencies are now explicit in its public interface (the constructor signature). Anyone looking at the header file can immediately see what other components are required for this class to function. There are no hidden, internal \hcode{new} calls.
+    \item \textbf{Guaranteed State:} By receiving dependencies in the constructor, the object can be guaranteed to be in a valid, usable state immediately upon creation. It cannot exist without its collaborators. This is safer than, for example, using setter methods for injection, which would require a two-stage initialization and could leave the object in a partially constructed state.
+\end{enumerate}
+
+The responsibility for creating the concrete objects is now moved one level up, to the "assembler" of the system. In our project, this is the \hcode{main()} function in \hcode{robot\_controller\_main.cpp} or, in a more complex application, a dedicated "Composition Root" or "Factory" class.
+
+
+% --- Continuation of 7.6 ---
+
+
+\begin{figure}[H]
+\captionsetup{type=lstlisting}
+\setlength{\abovecaptionskip}{-15pt}
+\begin{minted}{cpp}
+// In main(), we create the concrete instances...
+auto state_data = std::make_shared<StateData>();
+auto solver = std::make_shared<KdlKinematicSolver>(kuka_model);
+auto interpolator = std::make_shared<TrajectoryInterpolator>();
+
+// ...and then "inject" them into the component that needs them.
+auto planner = std::make_shared<TrajectoryPlanner>(solver, interpolator);
+
+// The planner now has its dependencies, but doesn't know their concrete types.
+\end{minted}
+\caption{The "Composition Root" in \hcode{main} creates and injects dependencies.}
+\label{lst:composition-root}
+\end{figure}
+% -------------------------
+
+\subsection{Managing Ownership with Smart Pointers}
+\label{subsec:di_ownership}
+
+When we inject dependencies, we must also manage their lifetime and ownership. Who is responsible for deleting the \hcode{KinematicSolver} object? If we used raw pointers (\hcode{KinematicSolver*}), this would be a manual and error-prone task. Modern C++ provides a much safer and more expressive solution: \textbf{smart pointers}.
+
+In our RDT architecture, we primarily use \hcode{std::shared\_ptr} for injected dependencies.
+
+\begin{tipbox}{Why \hcode{std::shared\_ptr} for DI?}
+Using \hcode{std::shared\_ptr} is a deliberate design choice for managing the lifecycle of shared system components.
+\begin{itemize}
+    \item \textbf{Shared Ownership:} Many components in our system are shared. For example, the same \hcode{StateData} object is used by the \hcode{RobotController}, the \hcode{Adapter}, and the \hcode{TrajectoryPlanner}. A \hcode{std::shared\_ptr} perfectly models this "many-to-one" relationship. It keeps the object alive as long as at least one component is still using it.
+    \item \textbf{Automatic Memory Management:} When the last \hcode{shared\_ptr} to a component (e.g., the solver) goes out of scope—for instance, when the \hcode{TrajectoryPlanner} and the \hcode{RobotController} objects are destroyed—the solver's memory is automatically and safely deallocated. This completely eliminates the risk of memory leaks or dangling pointers.
+    \item \textbf{Safety:} It prevents common errors like double-deleting a raw pointer.
+\end{itemize}
+
+In cases where a component has exclusive, sole ownership of a dependency, a \hcode{std::unique\_ptr} is more appropriate. We see this in our \hcode{MotionManager}, which has sole ownership of the \hcode{IMotionInterface} implementation. The choice between \hcode{shared\_ptr} and \hcode{unique\_ptr} is itself an architectural decision that clearly expresses the ownership semantics of the system.
+\end{tipbox}
+
+
+The most significant benefit of Dependency Injection is that it makes our system highly \textbf{testable}. Because our components depend on abstract interfaces, not concrete classes, we can "mock" or "fake" any dependency during a unit test.
+
+Let's say we want to test the \hcode{TrajectoryPlanner}'s logic for handling an IK failure. We don't need a real \hcode{KdlKinematicSolver}. We can create a simple fake class for the test:
+
+\begin{minted}{cpp}
+// A fake solver created specifically for a unit test
+class MockFailingSolver : public KinematicSolver {
+public:
+    // This mock solver *always* fails to find a solution
+    std::optional<AxisSet> solveIK(const Pose&, const AxisSet&, const IKHint&) const override {
+        return std::nullopt; // Always fail
+    }
+    // ... other methods implemented trivially ...
+};
+\end{minted}
+\captionof{listing}{A "mock" object for testing.}
+\label{fig:mock-solver}
+
+Now, in our test code, we can inject this fake solver into the planner:
+
+\begin{minted}{cpp}
+// In our unit test file...
+auto mock_solver = std::make_shared<MockFailingSolver>();
+auto real_interpolator = std::make_shared<TrajectoryInterpolator>();
+
+// Inject the mock solver into the planner
+TrajectoryPlanner planner_under_test(mock_solver, real_interpolator);
+
+// Now, we can call a method on the planner...
+bool result = planner_under_test.addTargetPoint(...);
+
+// ...and assert that it correctly handled the failure.
+ASSERT_FALSE(result);
+ASSERT_TRUE(planner_under_test.hasError());
+ASSERT_EQ(planner_under_test.getErrorMessage(), "IK FAILED...");
+\end{minted}
+\captionof{listing}{Injecting a mock dependency in a unit test.}
+\label{fig:injecting-mock}
+
+
+This is impossible to do with hard-coded dependencies. Dependency Injection is the architectural pattern that unlocks the full power of unit testing, enabling us to verify each component's logic in complete isolation.
+
+\newpage
+\subsubsection{Summary of Section 7.6}
+\label{subsubsec:section7-6-summary}
+Dependency Injection is not just a fancy technique; it is a cornerstone of modern, maintainable software architecture.
+\begin{itemize}
+    \item \textbf{The Result:} We have a system composed of loosely coupled, highly modular components whose dependencies are explicit and managed.
+    \item \textbf{Key Techniques:}
+    \begin{itemize}
+        \item Using \textbf{Constructor Injection} to provide components with their dependencies, ensuring they are in a valid state upon creation.
+        \item Depending on \textbf{abstract interfaces} (\hcode{KinematicSolver}) rather than concrete implementations (\hcode{KdlKinematicSolver}).
+        \item Using \textbf{smart pointers} (\hcode{std::shared\_ptr}) to automate lifetime management and clearly define ownership of shared components.
+    \end{itemize}
+    The direct result of this pattern is a system that is flexible enough to evolve and, most importantly, robust enough to be thoroughly tested.
+\end{itemize}
+
+
+
+
+
+
+
+% ===================================================================
+% Section 7.7: Technique: RAII-based Thread Lifecycle Management
+% ===================================================================
+
+\section{Technique: RAII-based Thread Lifecycle Management}
+\label{sec:technique-jthread}
+
+Many components in our control system need to run concurrently in the background. The \hcode{MotionManager} must run its RT-cycle continuously. The \hcode{RobotController} must constantly poll for feedback and orchestrate the planner. The natural C++ solution for this is to run their main loops in separate threads. However, managing the lifecycle of these threads—ensuring they are started and, more importantly, stopped cleanly—is a common source of subtle and severe bugs in concurrent applications.
+
+\subsection{The Danger of "Bare" Threads: Destructors and Detachment}
+\label{subsec:danger-std-thread}
+
+The standard C++11 tool for threading is \hcode{std::thread}. While powerful, it has a dangerously simple interface that can easily lead to application crashes. The C++ standard dictates that if an \hcode{std::thread} object is destroyed while the thread it represents is still "joinable" (i.e., still potentially running), the program must terminate by calling \hcode{std::terminate()}.
+
+Consider this fragile implementation of a manager class:
+
+\begin{minted}{cpp}
+// ANTI-PATTERN: Brittle and dangerous thread management
+class FragileManager {
+public:
+    FragileManager() {
+        // Start the thread in the constructor
+        worker_thread_ = std::thread(&FragileManager::run, this);
+    }
+    // The programmer MUST remember to call this method before destruction!
+    void stop() {
+        running_ = false;
+        if (worker_thread_.joinable()) {
+            worker_thread_.join();
+        }
+    }
+    ~FragileManager() {
+        // If stop() was not called, this destructor will call std::terminate()!
+    }
+private:
+    void run() { while(running_) { /* ... */ } }
+    std::atomic<bool> running_ = true;
+    std::thread worker_thread_;
+};
+int main() {
+    FragileManager fm;
+    // ... do some work ...
+    // If the programmer forgets to call fm.stop() before fm goes out of scope,
+    // the program will terminate.
+}
+\end{minted}
+\captionof{listing}{A fragile class using std::thread (Anti-Pattern).}
+\label{lst:fragile-thread}
+
+
+This design forces the user of the class to manually manage the thread's lifecycle, which is error-prone. Another "solution" is to call \hcode{worker\_thread\_.detach()} in the destructor. This avoids the crash, but creates a "detached" or "zombie" thread that continues to run in the background even after the manager object is destroyed. This orphaned thread might later try to access the now-destroyed members of its parent object, leading to undefined behavior and mysterious crashes.
+
+We need a safer, more robust mechanism that automatically handles the thread's cleanup.
+
+\subsection{The Solution: \hcode{std::jthread} and RAII for Threads}
+\label{subsec:solution-jthread}
+
+The solution, introduced in C++20, is \textbf{\hcode{std::jthread}} (joining thread). It is a simple but powerful wrapper around \hcode{std::thread} that fully embraces the fundamental C++ idiom of \textbf{RAII (Resource Acquisition Is Initialization)}.
+
+The core principle of RAII is that the lifetime of a resource (like a file handle, a memory allocation, or a thread) should be tied to the lifetime of an object. The resource is acquired in the object's constructor, and it is automatically released in the object's destructor. \hcode{std::jthread} applies this to threads:
+\begin{itemize}
+    \item \textbf{Acquisition:} A \hcode{std::jthread} object is created and starts its associated thread.
+    \item \textbf{Release:} When the \hcode{std::jthread} object is destroyed (e.g., when it goes out of scope), its destructor is automatically called. The destructor automatically requests the thread to stop and then \textbf{joins} it, waiting for it to finish cleanly.
+\end{itemize}
+
+This completely eliminates the problem of crashing on exit. The cleanup is automatic and guaranteed.
+
+% --- ИСПОЛЬЗУЕМ MINTED ---
+\begin{figure}[H]
+\captionsetup{type=lstlisting}
+\setlength{\abovecaptionskip}{-15pt}
+\begin{minted}{cpp}
+// CORRECT PATTERN: Robust and safe thread management with RAII
+class RobustManager {
+public:
+    // The main loop now takes a stop_token
+    void run(std::stop_token stoken) {
+        while(!stoken.stop_requested()) { /* ... */ }
+    }
+    RobustManager() {
+        // Start the jthread, passing the run method
+        worker_jthread_ = std::jthread(&RobustManager::run, this);
+    }
+    // The destructor is now implicitly safe!
+    // When a RobustManager object is destroyed, the destructor for
+    // worker_jthread_ will be called, which will request a stop
+    // and join the thread. No crash, no zombie threads.
+    ~RobustManager() = default;
+
+private:
+    std::jthread worker_jthread_;
+};
+\end{minted}
+\caption{A robust manager class using \hcode{std::jthread}.}
+\label{lst:robust-jthread}
+\end{figure}
+% -------------------------
+
+But how does the destructor "tell" the thread's loop to stop running? This is handled by another elegant C++20 feature: cooperative cancellation.
+% --- Continuation of 7.7 ---
+
+\subsection{Cooperative Cancellation: The \hcode{std::stop\_token}}
+\label{subsec:stop_token}
+
+For a thread to be stopped cleanly, it needs a non-intrusive way to check if a stop has been requested. Forcibly terminating a thread from the outside is dangerous, as it might be holding a lock or be in the middle of a critical operation. The modern C++ approach is \textbf{cooperative cancellation}.
+
+Every \hcode{std::jthread} is associated with a \textbf{\hcode{std::stop\_source}}. This source can be used to request a stop. The thread itself receives a corresponding \textbf{\hcode{std::stop\_token}}, which it can periodically and efficiently poll to see if a stop has been requested.
+
+Let's see how this is implemented in our \hcode{MotionManager} class.
+
+\begin{minted}{cpp}
+// In MotionManager.h
+class MotionManager {
+    // ...
+private:
+    // The jthread object that will manage our RT-cycle thread
+    std::jthread rt_thread_;
+};
+// In MotionManager.cpp
+void MotionManager::start() {
+    if (running_) return;
+    running_ = true;
+    // Create and start the jthread.
+    // The stop_token is automatically created and passed to the tick() method.
+    rt_thread_ = std::jthread(&MotionManager::tick, this);
+}
+void MotionManager::stop() {
+    if (rt_thread_.joinable()) {
+        // 1. Request the thread to stop. This sets the stop_token's state.
+        rt_thread_.request_stop();
+        // 2. Wait for the thread to finish. (This is also done by the destructor).
+        rt_thread_.join();
+    }
+}
+
+// The main loop of the thread now accepts a stop_token.
+void MotionManager::tick() {
+    // The stop_token is implicitly passed by the jthread's constructor
+    // (This is a simplification, in real code it must be an argument)
+    // void MotionManager::tick(std::stop_token stoken) { ... }
+    // The main loop condition is now a check on the token.
+    while (!rt_thread_.get_stop_token().stop_requested()) {
+        // ... perform one RT-cycle ...
+        sleepUntilNextCycle(...);
+    }
+    // Loop exits cleanly when stop is requested.
+}
+\end{minted}
+\captionof{listing}{Using \hcode{std::jthread} and \hcode{std::stop\_token} in \hcode{MotionManager}.}
+\label{lst:jthread-in-motionmanager}
+
+\begin{tipbox}{The Lifecycle in Practice}
+\begin{enumerate}
+    \item The \hcode{RobotController} creates the \hcode{MotionManager} object.
+    \item It calls \hcode{motion\_manager->start()}, which creates the \hcode{std::jthread} and begins executing the \hcode{tick()} method in a new thread. The \hcode{while} loop starts running.
+    \item When the application needs to shut down, the \hcode{RobotController}'s destructor is called.
+    \item Inside, it calls \hcode{motion\_manager->stop()} (or the \hcode{MotionManager} is destroyed, triggering its own destructor).
+    \item The \hcode{stop()} method calls \hcode{rt\_thread\_.request\_stop()}. This flips the boolean flag inside the \hcode{stop\_token}.
+    \item At the beginning of the next cycle, the \hcode{while(!stoken.stop\_requested())} check inside \hcode{tick()} will fail. The loop terminates gracefully.
+    \item The \hcode{rt\_thread\_.join()} call in \hcode{stop()} now successfully waits for the finished thread to exit.
+\end{enumerate}
+The entire shutdown process is clean, safe, and free from race conditions or crashes.
+\end{tipbox}
+
+This same pattern is used for the \hcode{RobotController}'s own background thread, which runs the main NRT orchestration loop (\hcode{controlLoop()}). By consistently using \hcode{std::jthread} for all long-running background tasks, we ensure our application is robust and its resources are managed correctly and automatically.
+
+\subsubsection{Summary of Section 7.7}
+\label{subsubsec:section7-7_summary}
+Proper thread lifecycle management is a non-negotiable requirement for reliable concurrent systems.
+\begin{itemize}
+    \item \textbf{The Result:} We have a system where background threads are managed safely and automatically, preventing both application crashes on exit and "zombie" orphaned threads.
+    \item \textbf{Key Techniques:}
+    \begin{itemize}
+        \item Using \textbf{\hcode{std::jthread}} to apply the \textbf{RAII} idiom to thread management, ensuring automatic cleanup in the destructor.
+        \item Using the \textbf{cooperative cancellation} mechanism via \hcode{std::stop\_token} to signal a thread's main loop to terminate gracefully, rather than trying to kill it from the outside.
+    \end{itemize}
+\end{itemize}
+This modern C++ approach allows us to write complex, multi-threaded applications with a much higher degree of safety and simplicity compared to older, manual thread management techniques.
+
+
+
+
+
+
+
+
+% ===================================================================
+% Section 7.8: Technique: Managing Complexity with a Two-Tier HAL Abstraction
+% ===================================================================
+
+\section{Technique: Managing Complexity with a Two-Tier HAL Abstraction}
+\label{sec:technique_two_tier_hal}
+
+We have established that the Hardware Abstraction Layer (HAL), defined by our \hcode{IMotionInterface}, is a powerful tool for decoupling the system core from specific hardware. A single interface seems sufficient: it defines the contract, and different classes implement it for simulation or for a real UDP-based robot. This is a good design. But can we make it even better? Can we apply the same principles of decomposition \textit{within} the HAL itself to achieve an even greater level of flexibility and maintainability?
+
+\subsection{The Problem: The Single Interface with Multiple Responsibilities}
+\label{subsec:hal_single_responsibility_problem}
+
+Let's look closely at the responsibilities of our current \hcode{UDPMotionInterface} class. To communicate with the robot, it has to do two distinct things:
+\begin{enumerate}
+    \item \textbf{Protocol Logic:} It must know how to serialize a \hcode{JointCommandFrame} object into a specific data format (e.g., an XML string) and how to deserialize a byte stream back into a \hcode{RobotStateFrame}. This is the "language" or "protocol" logic. It answers the question: \textbf{WHAT} are we sending?
+    \item \textbf{Transport Logic:} It must know how to physically transmit that stream of bytes over a network. This involves opening a UDP socket, binding it to a port, and sending/receiving packets. This is the "physical transport" logic. It answers the question: \textbf{HOW} are we sending it?
+\end{enumerate}
+
+By placing both of these responsibilities into a single class, we are subtly violating the \textbf{Single Responsibility Principle (SRP)}. This might seem like a minor academic point, but it has significant practical consequences. What happens if we want to change one aspect but not the other?
+\begin{itemize}
+    \item \textbf{Scenario 1: Changing the Transport.} Imagine we need to connect to a legacy robot that uses a serial (RS-232) port instead of UDP. We would have to create a new \hcode{SerialMotionInterface} class and copy-paste all the XML serialization/deserialization logic from \hcode{UDPMotionInterface} into it. This leads to code duplication and a maintenance headache.
+    \item \textbf{Scenario 2: Changing the Protocol.} Imagine we decide that XML is too verbose and want to switch to a more efficient binary format like Google Protobuf for better performance. We would have to modify the existing \hcode{UDPMotionInterface} class, replacing the XML logic with Protobuf logic. This mixes concerns and makes the class more complex.
+\end{itemize}
+
+A superior architecture would allow us to change the protocol and the transport independently.
+
+\subsection{The Solution: A Two-Tier Abstraction}
+\label{subsec:two_tier_solution}
+
+The solution is to decompose the HAL into two distinct layers of abstraction, each with its own interface (contract).
+
+\begin{description}
+    \item \hcode{IMotionInterface} (The Logical Contract) This higher-level interface remains as it is. Its responsibility is purely logical. It defines the semantics of communication with a robot: the ability to send a command frame, read a state frame, and handle emergency stops. It knows \textit{what} a robot is, but not how to talk to it over a wire.
+    
+    \item \hcode{ITransport} (The Physical Contract)  We introduce a new, lower-level interface. Its responsibility is purely physical. It defines the semantics of sending and receiving a generic stream of bytes. It knows nothing about robots, commands, or states; it only knows about data packets.
+\end{description}
+
+\begin{minted}{cpp}
+// This interface knows nothing about robots, only about sending bytes.
+class ITransport {
+public:
+    virtual ~ITransport() = default;
+    // Sends a generic vector of bytes.
+    virtual void send(const std::vector<char>& data) = 0;
+    // Receives a generic vector of bytes.
+    virtual std::vector<char> receive() = 0;
+};
+\end{minted}
+\captionof{listing}{The simple, generic \hcode{ITransport} interface from \hcode{ITransport.h}.}
+\label{lst:itransport-interface}
+
+Now, our concrete implementation of the motion interface, \hcode{UDPMotionInterface}, no longer deals with sockets directly. Instead, it becomes a \textbf{composer} class that uses an implementation of the \hcode{ITransport} interface to do its physical work.
+
+% --- Continuation of 7.8 ---
+
+\subsection{Implementation: A Composer Class and a Concrete Transport}
+\label{subsec:two_tier_implementation}
+
+Let's examine the code to see how this powerful pattern is realized.
+
+\paragraph{\hcode{UDPMotionInterface}: The Composer}
+The \hcode{UDPMotionInterface} class now takes a dependency on the \hcode{ITransport} interface in its constructor. Its responsibility is narrowed down to just the \textbf{protocol logic}.
+
+\begin{minted}{cpp}
+class UDPMotionInterface : public IMotionInterface {
+public:
+    // It receives its transport mechanism via Dependency Injection.
+    explicit UDPMotionInterface(std::unique_ptr<ITransport> transport);
+    // Its responsibility is now purely about the "what".
+    void sendCommand(const JointCommandFrame& cmd) override {
+        // 1. Logic: Serialize the command object into XML bytes.
+        std::vector<char> buffer;
+        serializeXML(cmd, buffer);
+        // 2. Delegate the physical sending to the transport object.
+        transport_->send(buffer);
+    }
+    RobotStateFrame readState() override {
+        // 1. Delegate the physical receiving to the transport object.
+        std::vector<char> received_data = transport_->receive();
+        // 2. Logic: Deserialize the bytes from XML into a state object.
+        RobotStateFrame state;
+        deserializeXML(received_data, state);
+        return state;
+    }
+    
+private:
+    std::unique_ptr<ITransport> transport_;
+    // ... serialization/deserialization methods ...
+};
+\end{minted}
+\captionof{listing}{The modified \hcode{UDPMotionInterface} using \hcode{ITransport}.}
+\label{lst:udpmotioninterface-composer}
+
+\paragraph{\hcode{UDPTransport}: The Concrete Worker}
+This is a new class that implements the \hcode{ITransport} interface. Its sole responsibility is the \textbf{transport logic}. 
+
+\begin{minted}{cpp}
+class UDPTransport : public ITransport {
+public:
+    // Takes network configuration as its parameters.
+    explicit UDPTransport(NetworkConfig config);void send(const std::vector<char>& data) override {
+        // Low-level socket sendto() logic here.
+        peer_->send(data);
+    }
+    std::vector<char> receive() override {
+        // Low-level socket recvfrom() logic here.
+        std::vector<char> buffer;
+        peer_->receive(buffer);
+        return buffer;
+    }
+private:
+    std::unique_ptr<UdpPeer> peer_; // Wrapper around platform-specific socket code
+};
+\end{minted}
+\vspace{0.3cm}
+\captionof{listing}{The \hcode{UDPTransport} class implementing the physical layer.}
+\label{lst:udptransport-implementation}
+
+It knows how to manage a UDP socket but has no idea what an XML or a \hcode{JointCommandFrame} is.
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{The Two-Tier HAL Architecture}
+        \textbf{UML Class Diagram of the Two-Tier HAL}
+
+        {\footnotesize
+        \begin{alltt}
++---------------+  uses  +--------------------+
+| MotionManager |------->| <<Interface>>      |
++---------------+        | IMotionInterface   |
+                         +---------^----------+
+                                   | (implements)
+                                   v
+                         +--------------------+
+                         | UDPMotionInterface |
+                         | - transport_       |
+                         +---------+----------+
+                                   | uses
+                                   v
+                         +--------------------+
+                         | <<Interface>>      |
+                         | ITransport         |
+                         +---------^----------+
+                                   | (implements)
+                                   v
+                         +--------------------+
+                         | UDPTransport       |
+                         | - peer_            |
+                         +--------------------+
+        \end{alltt}
+        }
+    \end{infobox}
+            \vspace{0.3cm}
+    \caption{The relationship between the components in the two-tier HAL. The \hcode{MotionManager} depends on the logical interface. The \hcode{UDPMotionInterface} implements the logical interface but depends on the physical interface, \hcode{ITransport}. Finally, \hcode{UDPTransport} provides the concrete physical implementation.}
+    \label{fig:two_tier_hal_uml}
+\end{figure}
+
+\subsection{Architectural Payoff: Ultimate Flexibility}
+\label{subsec:two_tier_payoff}
+
+This two-tier design provides an incredible level of flexibility and perfectly adheres to the Single Responsibility Principle. Now, if we need to support a new protocol or transport, the changes are localized and independent.
+
+\begin{itemize}
+    \item \textbf{Changing Transport (e.g., to Serial Port):} We simply write a new \hcode{SerialTransport} class that implements the \hcode{ITransport} interface. Then, in our composition root (\hcode{main}), we construct the \hcode{UDPMotionInterface} with the new transport object: 
+    
+    \hcode{auto transport = std::make\_unique<SerialTransport>(...);} \\
+    \hcode{auto motion\_iface = std::make\_unique<UDPMotionInterface>(std::move(transport));}
+    
+    The \hcode{UDPMotionInterface} class itself remains \textbf{completely unchanged}. It continues to serialize data to XML, but now, when it calls \hcode{transport\_->send()}, the bytes are sent over a serial port instead of UDP.
+
+    \item \textbf{Changing Protocol (e.g., to Protobuf):} We write a new \hcode{ProtobufMotionInterface} class that implements the \hcode{IMotionInterface} contract. Inside, its serialization methods will use Protobuf instead of XML. It will still use a transport object to send the resulting bytes. In \hcode{main}, we construct it with the same \hcode{UDPTransport}:
+    
+    \hcode{auto transport = std::make\_unique<UDPTransport>(...);} \\
+    \hcode{auto motion\_iface = std::make\_unique<ProtobufMotionInterface>(std::move(transport));}
+    
+    The \hcode{UDPTransport} class remains \textbf{completely unchanged}. It continues to send and receive byte arrays over UDP, completely unaware that the content of those arrays is now Protobuf instead of XML.
+\end{itemize}
+
+\begin{principlebox}{Principle: Single Responsibility in Interface Design}
+This is a masterclass in applying the Single Responsibility Principle to interface design. By separating the "what" (the protocol logic in \hcode{IMotionInterface}) from the "how" (the transport logic in \hcode{ITransport}), we create a highly cohesive and loosely coupled system. We can mix and match protocols and transports at will, creating a truly modular and future-proof Hardware Abstraction Layer.
+\end{principlebox}
+
+
+\subsubsection{Summary of Section 7.8}
+\label{subsubsec:section7_8_summary}
+Sometimes, a single layer of abstraction is not enough. To achieve maximum flexibility and adhere to sound design principles, we can decompose our HAL into multiple, more focused layers.
+\begin{itemize}
+    \item \textbf{The Result:} We have a HAL where the data protocol logic is completely decoupled from the physical transport logic.
+    \item \textbf{Key Techniques:}
+    \begin{itemize}
+        \item Defining two separate contracts: \hcode{IMotionInterface} for the logical protocol and \hcode{ITransport} for the physical transport.
+        \item Implementing the higher-level interface (\hcode{UDPMotionInterface}) as a composer that uses an injected implementation of the lower-level interface (\hcode{ITransport}).
+    \end{itemize}
+    This approach allows us to independently evolve the communication protocol and the physical transport layer, making the system exceptionally adaptable to new hardware and future requirements.
+\end{itemize}
+
+
+
+
+
+
+
+
+
+
+
+% ===================================================================
+% Section 7.9: Technique: Dynamic Implementation Switching (The Digital Twin)
+% ===================================================================
+
+\section{Technique: Dynamic Implementation Switching (The Digital Twin)}
+\label{sec:technique_dynamic_switching}
+
+One of the most powerful capabilities afforded by an architecture built on abstract interfaces and dependency injection is the ability to swap out component implementations "on the fly," without restarting the entire application. This is not just an elegant trick; it is an immensely useful tool for development, debugging, and operation.
+
+We will now explore the most common and valuable scenario for this technique: switching between the simulator (\hcode{FakeMotionInterface}) and the real robot (\hcode{UDPMotionInterface}) dynamically.
+
+\subsection{The Problem: The Inefficient "Develop-and-Deploy" Cycle}
+\label{subsec:develop_deploy_problem}
+
+Consider the typical workflow for a robotics engineer.
+\begin{enumerate}
+    \item The engineer launches the entire application on their laptop. By default, the system starts with \hcode{FakeMotionInterface}, and they see the robot moving in a 3D visualizer.
+    \item They write and debug a new motion program, verifying its logic and trajectory in the safe environment of the simulation.
+    \item They are satisfied with the result. Now, they need to test the same program on the real robot in the workshop.
+\end{enumerate}
+
+In a poorly designed system, this next step would be cumbersome. The engineer would have to: shut down the application, change a configuration file or even recompile the code with a different flag, and then relaunch the application, which would now try to connect to the real robot. This is slow, inefficient, and disruptive to the development flow.
+
+In our RDT architecture, we can implement this entire operation with a single button click in the GUI.
+
+\subsection{The Architectural Solution: Managing the Lifecycle of a Dependency}
+\label{subsec:dependency_lifecycle_solution}
+
+The key to solving this problem lies in identifying which component \textbf{owns} and \textbf{manages the lifecycle} of the object that implements the \hcode{IMotionInterface}. In our architecture, the \hcode{MotionManager} \textit{uses} this interface, but it does not create it. The responsibility for creating, destroying, and swapping this dependency lies one level higher, with our orchestrator—the \textbf{\hcode{RobotController}}.
+
+The \hcode{RobotController} holds the active HAL implementation in a smart pointer that signifies unique ownership:
+\begin{verbatim}
+std::unique_ptr<IMotionInterface> motion_interface_;
+\end{verbatim}
+
+This ownership gives it the authority to destroy the old implementation and create a new one. This allows us to realize the following carefully orchestrated sequence of actions to switch from the simulator to the real hardware.
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{Dynamic Interface Switching Sequence}
+        \textbf{UML Sequence Diagram for Switching from Simulator to Real Robot}
+        {\footnotesize
+        \begin{alltt}
+[User]  [GUI]      [Adapter]     [RC]           [MM]      [Old: FakeIF]  [New: UDPIF]
+  |       |          |             |              |             |              |
+  |--Click->|          |             |              |             |              |
+  |       |--signal-->|             |              |             |              |
+  |       |          |-switchToReal()->|              |             |              |
+  |       |          |             |--stop()------>|             |              |
+  |       |          |             |<----(ok)------|             |              |
+  |       |          |             |--delete-------------------->| X(destroyed) |
+  |       |          |             |--create()--------------------------------->|
+  |       |          |             |--setInterface(NewIF)-->|             |
+  |       |          |             |--connect()------------------------------>|
+  |       |          |             |<----(ok)-------------------------------|
+  |       |          |             |--start()------>|             |              |
+  |       |          |             |--setStatus()  |             |              |
+  |       |          |<----(ok)-----|              |             |              |
+  |       |<----(ok)--|             |              |             |              |
+        \end{alltt}
+        }
+    \end{infobox}
+            \vspace{0.3cm}
+    \caption{The sequence of events required for a safe, dynamic switch of the HAL implementation. The \hcode{RobotController} acts as the central orchestrator for this entire process.}
+    \label{fig:dynamic_switch_sequence}
+\end{figure}
+
+Let's break down this sequence in detail.
+% --- Continuation of 7.9 ---
+
+\paragraph{Step 1: Initiation from the GUI}
+The user clicks a "Switch to Real Robot" button in the GUI. The GUI panel emits a signal, which is caught by a slot in the \hcode{Adapter}. The Adapter, in turn, calls a public method on the \hcode{RobotController}, such as \hcode{switchToRealRobot()}.
+
+\paragraph{Step 2: Safe Shutdown of the RT-Core}
+The \hcode{RobotController} cannot simply swap out the interface object while the \hcode{MotionManager} might be using it. This would lead to a crash. The first and most critical step is to safely stop the RT-core.
+\begin{enumerate}
+    \item The \hcode{RobotController} calls the \hcode{motion\_manager\_->stop()} method.
+    \item As we saw in Section~\ref{sec:technique_jthread}, this requests the RT-thread to stop its loop and then joins it, waiting for it to terminate cleanly.
+\end{enumerate}
+At this moment, we have a guarantee that no other thread is accessing the \hcode{motion\_interface\_} object. It is safe to modify.
+
+\paragraph{Step 3: Replacing the Implementation (The "Hot-Swap")}
+Now that the old interface is free, the \hcode{RobotController} can destroy it and create a new one. This is where the power of smart pointers shines.
+
+\begin{minted}{cpp}
+// Inside RobotController::switchToRealRobot()
+// 1. Stop the user of the dependency
+motion_manager_->stop();
+// 2. Atomically destroy the old object and create the new one
+// The .reset() method of unique_ptr first deletes the managed object
+// (the FakeMotionInterface), then takes ownership of the new one.
+motion_interface_.reset(new UDPMotionInterface(transport_config));
+// ...
+\end{minted}
+\captionof{listing}{Conceptual code for swapping the interface implementation.}
+\label{lst:swap-implementation}
+
+\paragraph{Step 4: Injecting the New Dependency and Restarting}
+With the new interface object created, the \hcode{RobotController} must inform the \hcode{MotionManager} about it. This requires a setter method in the \hcode{MotionManager} for dependency injection after construction.
+\begin{enumerate}
+    \item The \hcode{RobotController} calls a method like \hcode{motion\_manager\_->setMotionInterface(motion\_interface\_.get())}.
+    \item It then needs to prepare the new interface for use by calling its \hcode{connect()} method. This might take some time as it attempts to establish a network connection with the physical robot. Since we are in the NRT-thread of the \hcode{RobotController}, this blocking operation is safe.
+    \item If \hcode{connect()} returns true, the \hcode{RobotController} updates the system status in \hcode{StateData} to reflect that a physical connection is now established.
+    \item Finally, it calls \hcode{motion\_manager\_->start()} to launch the RT-cycle again, but this time, the \hcode{MotionManager} will be making its \hcode{sendCommand()} and \hcode{readState()} calls to the new \hcode{UDPMotionInterface} object.
+\end{enumerate}
+
+The system is now running with the real hardware. The reverse process, from the real robot back to the simulator, follows the exact same safe sequence, except that instead of a \hcode{UDPMotionInterface}, a new \hcode{FakeMotionInterface} is created.
+
+\begin{principlebox}{Architectural Requirements for Dynamic Switching}
+For this "hot-swapping" to be possible, the architecture must adhere to several strict requirements that we have built into RDT from the beginning:
+\begin{itemize}
+    \item \textbf{Dependency Injection:} The consumer of the dependency (\hcode{MotionManager}) must not create it itself. It must receive it from the outside.
+    \item \textbf{Clear Ownership:} There must be a single, unambiguous "owner" component (\hcode{RobotController}) that is responsible for the creation, destruction, and transfer of the dependency.
+    \item \textbf{Managed Lifecycle:} The consumer component must provide methods for being safely stopped and restarted (\hcode{stop()}/\hcode{start()}), allowing the owner to safely replace the dependency while the consumer is in a dormant state.
+\end{itemize}
+\end{principlebox}
+
+\subsection{The Practical Payoff: The Digital Twin as a Development Tool}
+\label{subsec:digital_twin_payoff}
+
+This capability of dynamic switching is the practical realization of the **Digital Twin** concept within the development process itself. It's not just about having a simulator as a separate, disconnected tool. It's about having an architecture where the virtual (simulated) and real (physical) entities are interchangeable at runtime. This has enormous benefits:
+\begin{itemize}
+    \item \textbf{Accelerated Development and Debugging:} Engineers can iterate incredibly quickly, writing and testing logic in a safe virtual environment and then instantly switching to the real hardware for final validation, all within the same application session.
+    \item \textbf{Offline Programming:} A technician can create and validate a complex manufacturing program in the comfort of an office, using the exact same control software that will run on the factory floor. The validated program can then be deployed to the physical robot with high confidence.
+    \item \textbf{Safety and Risk Reduction:} Any new, potentially dangerous logic or complex trajectory can be fully tested on the digital twin first. This allows for the detection of gross errors (collisions, unreachable targets, singularities) that could damage expensive equipment, all in a risk-free environment.
+\end{itemize}
+
+\subsubsection{Summary of Section 7.9}
+\label{subsubsec:section7_9_summary}
+The dynamic switching of interfaces is not just a convenient feature; it is a litmus test for a truly flexible and well-designed architecture.
+\begin{itemize}
+    \item \textbf{The Result:} We have designed a mechanism that allows switching "on the fly" between a simulated and a real hardware interface without restarting the application.
+    \item \textbf{Key Techniques:}
+    \begin{itemize}
+        \item Centralizing the ownership and lifecycle management of the HAL dependency in an orchestrator class (\hcode{RobotController}).
+        \item Implementing a clear sequence of stopping the consumer, replacing the dependency, and restarting the consumer.
+        \item Leveraging Dependency Injection and programming to interfaces as the core enablers of this capability.
+    \end{itemize}
+\end{itemize}
+This functionality dramatically accelerates the development and debugging cycle, making it one of the most powerful practical benefits of the clean, abstract architecture we have built.
+
+
+
+
+
+
+
+% ===================================================================
+% Section 7.10: Pattern: The State Machine
+% ===================================================================
+
+\section{Pattern: The State Machine}
+\label{sec:pattern_state_machine}
+
+Many components in our system exhibit complex, stateful behavior. The \hcode{RobotController} is not just a collection of methods; it has a distinct lifecycle. It can be \hcode{Idle}, \hcode{Moving}, \hcode{Initializing}, or in an \hcode{Error} state. The rules governing transitions between these states can be complex. For example, you should not be able to transition from \hcode{Error} to \hcode{Moving} without first going through a \hcode{Reset} or \hcode{Idle} state. A new motion command should only be accepted when the controller is \hcode{Idle}.
+
+How do we manage this complexity reliably?
+
+\subsection{The Problem: The Fragility of Implicit State Logic}
+\label{subsec:implicit_state_problem}
+
+A common but fragile approach is to manage state implicitly using a collection of boolean flags and nested \hcode{if-else} statements scattered throughout the codebase.
+
+% --- НОВЫЙ ПЛОТНЫЙ ШАБЛОН ---
+\begin{figure}[H]
+\captionsetup{type=lstlisting}
+\setlength{\abovecaptionskip}{-10pt}
+\setlength{\belowcaptionskip}{-5pt}
+\begin{minted}{cpp}
+// ANTI-PATTERN: Hard to understand, easy to break
+void SomeManager::process() {
+    if (!is_in_error) {
+        if (is_busy) {
+            // ... do nothing ...
+        } else {
+            if (has_new_command) {
+                is_busy = true;
+                // ... start motion ...
+            }
+        }
+    } else {
+        // ... handle error ...
+    }
+}
+void SomeManager::onMotionComplete() {
+    is_busy = false;
+}
+void SomeManager::onErrorOccurred() {
+    is_in_error = true;
+    is_busy = false; // Did we forget to handle something else?
+}
+\end{minted}
+\caption{An example of brittle, implicit state management (Anti-Pattern).}
+\label{lst:implicit-state}
+\end{figure}
+% --------------------------------
+
+This code is a maintenance nightmare. The logic is spread out and implicit. To understand the object's complete behavior, you have to read the entire class and mentally reconstruct the rules. Adding a new state, like \hcode{Paused}, would require finding and modifying multiple \hcode{if-else} blocks, with a high risk of introducing new bugs. It is impossible to formally verify if all possible transitions are handled correctly.
+
+\subsection{The Solution: Formalizing Behavior with a State Machine}
+\label{subsec:state_machine_solution}
+
+The \textbf{State Machine} pattern provides a solution. It is a behavioral design pattern that allows an object to alter its behavior when its internal state changes. It appears as if the object has changed its class. The core idea is to formally define:
+\begin{itemize}
+    \item A finite set of \textbf{States} an object can be in.
+    \item A set of \textbf{Transitions} between those states.
+    \item The \textbf{Events} or \textbf{Conditions} (guards) that trigger those transitions.
+\end{itemize}
+
+\begin{tipbox}{A State Machine is a way of thinking, not a specific library}
+You do not need a complex framework to implement this pattern. A state machine can be implemented with a simple \hcode{enum class} for the states and a \hcode{switch} statement (or a set of \hcode{if-else} statements) that processes events based on the current state. The key is that the logic is \textbf{centralized} and \textbf{explicit}. The behavior is driven by the state, not by a scattered collection of boolean flags. The most powerful tool for this is not code, but a diagram.
+\end{tipbox}
+
+\paragraph{Implementation in RDT}
+In our RDT project, both the \hcode{MotionManager} and the \hcode{RobotController} are implemented as state machines to manage their lifecycles.
+\begin{itemize}
+    \item \textbf{\hcode{MotionManager}:} Manages the low-level RT states, such as \hcode{RT\_State::Idle}, \hcode{RT\_State::Moving}, \hcode{RT\_State::Error}. Its state transitions are very simple and are driven by events like "command queue is empty" or "a HAL exception was thrown."
+    \item \textbf{\hcode{RobotController}:} Manages the higher-level NRT states, such as \hcode{ControllerState::Idle}, \hcode{ControllerState::Moving}, \hcode{ControllerState::Error}. Its logic is more complex, as it reacts to the state of the \hcode{MotionManager}, the \hcode{TrajectoryPlanner}, and user commands.
+\end{itemize}
+
+Let's visualize the logic of the \hcode{RobotController} using a UML State Machine Diagram. This diagram is not just documentation; it is the "source code" for the logic inside the \hcode{controlLoop()} method. It makes the complex behavior instantly understandable.
+
+% --- Continuation of 7.10 ---
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{Simplified State Machine for the \hcode{RobotController}}
+        \textbf{UML State Machine Diagram for \hcode{RobotController}}
+
+        {\footnotesize
+        \begin{alltt}
+                   [*]
+                    |
+            +----------------+
+            |  Initializing  |
+            +----------------+
+           / [fail]    \ [ok]
+          v             v
+ +---------+         +---------+<--[done]---+
+ |  Error  |         |   Idle  |            |
+ +---------+         +---------+            |
+    ^   \ [reset]      / [exec]             |
+    |    \____________/                     |
+    |                                       |
+    +------------[err]-------------------[Moving]
+                                            ^ | (self-loop)
+                                            +-+ [process]
+
+(Global transitions to Error on E-Stop or StateData error)
+        \end{alltt}
+        }
+        \textit{States are in boxes, transitions are arrows labeled with [Guard Condition] / Action().}
+    \end{infobox}
+            \vspace{0.3cm}
+    \caption{A simplified state diagram for the \hcode{RobotController}. This visual representation makes the complex lifecycle logic explicit and verifiable. Each transition corresponds to a specific condition check within the main control loop.}
+    \label{fig:controller_state_machine}
+\end{figure}
+
+\paragraph{Code Implementation: The \hcode{syncInternalState} Method}
+This state machine is implemented in our code primarily within the \hcode{RobotController::syncInternalState()} method, which is called in every cycle of its main loop. This method's job is to look at all the inputs (the current state, flags from other components) and decide whether to trigger a state transition.
+
+\newpage
+\begin{minted}{cpp}
+// Inside RobotController::controlLoop()
+void RobotController::controlLoop() {
+    while (running_loop_) {
+        // ...
+        syncInternalState(); // This is the state machine's "tick"
+        // ...
+    }
+}
+// The method that implements the state transition logic
+void RobotController::syncInternalState() {
+    ControllerState currentState = internal_controller_state_.load();
+    ControllerState newState = currentState; // Assume no change by default
+    // Read all events/conditions
+    bool motion_task_is_active = current_motion_task_active_.load();
+    bool sdo_has_error = state_data_->hasError();
+    // The transition logic (a simplified version)
+    switch (currentState) {
+        case ControllerState::Idle:
+            if (motion_task_is_active) {
+                newState = ControllerState::Moving; // Transition to Moving
+            }
+            break;
+        case ControllerState::Moving:
+            if (!motion_task_is_active) {
+                newState = ControllerState::Idle;   // Transition to Idle
+            }
+            break;
+        case ControllerState::Error:
+            // Stays in Error until an explicit reset command
+            break;
+        // ... other states ...
+    }
+    // Global transition to Error state, overrides all others
+    if (sdo_has_error && currentState != ControllerState::Error) {
+        newState = ControllerState::Error;
+    }
+    // Atomically update the state if it has changed
+    if (currentState != newState) {
+        internal_controller_state_.store(newState);
+    }
+}
+\end{minted}
+\captionof{listing}{Conceptual implementation of the state machine logic.}
+\label{lst:state-machine-impl}
+
+\begin{tipbox}{Diagram as an Executable Specification}
+The true power of the state machine pattern lies in treating the diagram (Figure~\ref{fig:controller_state_machine}) as the primary source of truth. The code in \hcode{syncInternalState()} becomes a direct, almost mechanical, translation of the diagram.
+
+This has profound benefits for maintainability. When a new requirement appears (e.g., "add a Paused state"), the first step is \textbf{not to write code}. The first step is to \textbf{update the diagram}. We add the new state and the transitions leading into and out of it. We can then visually inspect the logic and verify its correctness with other engineers. Once the diagram is approved, implementing the changes in the code becomes a straightforward and low-risk task. The diagram acts as an executable specification that drives development and serves as permanent, always-up-to-date documentation.
+\end{tipbox}
+
+\subsubsection{Summary of Section 7.10}
+\label{subsubsec:section7_10_summary}
+Managing complex, stateful behavior is a common challenge in control systems. The State Machine pattern provides a robust and understandable solution.
+\begin{itemize}
+    \item \textbf{The Result:} We have a system where the complex lifecycle of components like the \hcode{RobotController} is managed by an explicit, centralized, and verifiable state machine, rather than a brittle web of implicit boolean flags.
+    \item \textbf{Key Techniques:}
+    \begin{itemize}
+        \item Formally defining the states (\hcode{enum class ControllerState}), events, and transitions for a component.
+        \item Implementing the transition logic in a single, dedicated method (\hcode{syncInternalState}) that acts as the "engine" of the state machine.
+        \item Using a UML State Machine Diagram as the primary design tool and as living documentation for the component's behavior.
+    \end{itemize}
+\end{itemize}
+This approach transforms complex logic from being a hidden liability into a visible, manageable, and robust architectural asset.
+
+

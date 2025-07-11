@@ -1,0 +1,700 @@
+% Chapter 2: A strong, evocative title.
+\chapter{From Code to System: The Engineer's Mindset}
+%\pagestyle{main}
+% "What you will learn" box is a great guide for the reader.
+\begin{navigationbox}{In this chapter}
+    \begin{itemize}
+        \item Why a system is more than just a collection of classes, and the danger of the "Frankenstein" architecture.
+        \item How to use modeling as a practical thinking tool to design behavior before writing code.
+        \item How the V-Model provides a disciplined framework for linking requirements to verification.
+        \item The critical importance of proper decomposition, well-defined interfaces, and the Single Responsibility Principle.
+        \item The most common architectural mistakes and how to avoid them from the start.
+    \end{itemize}
+\end{navigationbox}
+
+
+\section{Why a System Is Not Just a Pile of Bricks}
+
+When an engineer begins writing a robot controller, the first thing that appears is often not an architecture, but a collection of files. One file handles inverse kinematics, another handles data transmission to a driver, and a third plans a trajectory. And it all seems to work. Sometimes. Until something needs to change.
+
+This is the most common trap in engineering: confusing code with a system. A pile of bricks is not a house. Both are made of the same materials, but the house has a blueprint, a structure, and a purpose. In software engineering, especially in robotics, development almost always starts "bottom-up." We write what is closest and most understandable: an algorithm, a control loop, a data handler. Then, like a skeleton, this code gets layered with new functionality: logging, a graphical interface, error handling, and interaction with real hardware.
+
+\subsection{The "Bottom-Up" Trap: From Algorithm to Chaos}
+
+This approach, where development proceeds from the specific to the general without a preconceived plan, inevitably leads to the creation of a so-called \term{Frankenstein system}. In it, everything is connected to everything else, and the slightest change in one place causes a chain reaction of edits in ten others.
+
+\begin{dangerbox}{Danger: A Hidden Time Bomb}
+A system assembled from disparate parts without a unified plan is a slow-ticking time bomb. It might work beautifully during the prototype stage but will become a nightmare during industrial operation and maintenance.
+\end{dangerbox}
+
+The main symptom of such a system is its fragility and opacity. Questions arise that have no quick answers: Where does the planning logic end and the execution logic begin? Which module is responsible for checking velocity limits? Why does the kinematics stop working when the GUI is disabled? If you cannot answer these questions instantly, you do not have a system yet. You have a program.
+
+\begin{principlebox}{Important: The Sum of the Parts}
+A system is not merely the sum of its modules. It is the rules of their interaction, a clear distribution of responsibilities, and, most importantly, the coherence of all levels—from the driver to the user interface.
+\end{principlebox}
+
+\subsection{System Criteria: Replaceability, Testability, and Boundaries}
+
+What, in practice, distinguishes a true engineering system from a mere collection of classes? The answer lies in several key characteristics that are established during the design phase. If your development does not meet these criteria, it is critically vulnerable during the industrial operation stage.
+
+
+\begin{table}[h!]
+    \caption{Comparison: Just Code vs. an Engineered System}
+    \label{tab:code_vs_system}
+    \centering
+    % Увеличиваем интервал между строками
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{p{0.2\textwidth} p{0.35\textwidth} p{0.35\textwidth}}
+        \toprule % Толстая линия перед первой строкой (заголовком)
+        \textbf{Criterion} & \textbf{"Just Code" (Bottom-Up Approach)} & \textbf{Engineered System (Designed Architecture)} \\
+        %\specialrule{\heavyrulewidth}{0pt}{0pt} % Толстая линия сразу после заголовка
+        \toprule 
+        \textbf{Modularity} & Functions and classes with blurry boundaries. The logic of one module "leaks" into another. & Components with clear, verifiable contracts (interfaces). Each does only its job. \\
+        \midrule % Тонкая линия
+        \textbf{Data Flow} & Chaotic. Anyone can call anyone and modify any data. & Strictly defined inputs and outputs for each component. Data moves along predictable paths. \\
+        \midrule % Тонкая линия
+        \textbf{Replaceability} & Replacing one module (e.g., a kinematics solver) requires a cascading redesign of half the project. & A component implementing a specific interface can be easily replaced by another with the same interface. \\
+        \midrule % Тонкая линия
+        \textbf{Reaction to Change} & A small change in requirements breaks multiple parts of the system. & Localized. Changes affect only one or two components, without impacting the entire system. \\
+        \midrule % Тонкая линия
+        \textbf{Testability} & Possible only in a full "end-to-end" run. Individual parts cannot be tested in isolation. & Each component can and should be tested independently of the others (unit testing). \\
+        \midrule % Тонкая линия
+        \textbf{Error Handling} & Fatal exceptions or program crashes. Unpredictable behavior. & Planned degradation. The system transitions to a safe state and reports the problem. \\
+        \midrule % Тонкая линия
+        \textbf{Behavioral Model} & Exists only in the author's head. It is informal and often contradictory. & Explicitly described (in diagrams, scenarios, tests). It is understood by the entire team and is verifiable. \\
+        \bottomrule % Толстая линия в конце таблицы
+    \end{tabular}
+\end{table}
+
+If you cannot replace one module without a cascading redesign, test the behavior logic without running the GUI, or clearly state where one interface ends and another begins, it means you are still at the program stage. And that's fine for a prototype, but fatal for a product.
+
+
+\section{Design by Modeling: Thinking Before Coding}
+
+When an engineer-programmer hears the words "model" or "modeling," images of cumbersome UML diagrams, formal specifications, or bright block schemes in Simulink often come to mind. It seems like something academic, detached from the reality of writing code, and sometimes just plain bureaucracy.
+
+In truth, the real essence of modeling lies not in the tools or diagrams. \textbf{It is a way of thinking}. It is an engineering discipline that forces us to answer three main questions before the first line of code is written:
+\begin{enumerate}
+    \item \textbf{What are we building?} (What is the expected behavior?)
+    \item \textbf{Why are we building it this way?} (What are the constraints and trade-offs?)
+    \item \textbf{How will we know it works correctly?} (How will we verify it?)
+\end{enumerate}
+
+\begin{principlebox}{Important: The Goal of Documentation}
+Systems engineering is not about writing more documentation. It's about not having to write it in a debug chat channel after the release.
+\end{principlebox}
+
+\subsection{From Model to Behavior: The Essence of a Control System}
+
+So what is a model in the context of a control system? Forget about UML. A model is not an abstract entity, but a concrete engineering artifact that can be "touched" and verified. Imagine a blueprint for a house: it's not a house yet, but from it, you can understand where the walls will be, how the utilities will run, and whether the floors will bear the load. The blueprint is a model.
+
+It's the same in our field. A control system model is its formalized description, which:
+\begin{itemize}
+    \item \textbf{Defines behavior:} How exactly a component should react to various inputs and internal states.
+    \item \textbf{Formalizes the interface:} What exactly goes into a component and what comes out. No ambiguity.
+    \item \textbf{Acts as a verifiable contract:} The description must be so clear that tests can be written based on it, which either confirm the implementation's compliance with the model or refute it.
+\end{itemize}
+
+\begin{tipbox}{Engineering Tip: The Form of a Model}
+A model is a way to make a system observable and verifiable before its full implementation. It could be a set of diagrams, an Excel spreadsheet, a text document, or even a unit test that describes behavior. The main thing is that it provides unambiguous answers to architectural questions and helps to catch contradictions at the earliest stage.
+\end{tipbox}
+
+The opposite of the model-based approach is an intuitive architecture, where all behavior is hidden directly in the code, interfaces are created "on the fly" and are not formalized, and inputs/outputs are not clearly defined. This approach is forgivable for rapid prototyping but is mortally dangerous in a system with real-time constraints, real hardware, and a real development team that will have to support it.
+
+\subsection{Types of Models in Control Systems}
+
+Modeling is not a monolithic process; it involves creating various "slices" or representations of the system, each of which answers its own set of questions. Understanding these model types helps to decompose complexity and view the system from different angles.
+
+
+\begin{table}[h!]
+    \caption{Types of Models in Control Systems}
+    \label{tab:model_types}
+    \centering
+    % Увеличиваем интервал между строками
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{p{0.2\textwidth} p{0.4\textwidth} p{0.3\textwidth}}
+        \toprule % Толстая линия перед первой строкой (заголовком)
+        \textbf{Model Type} & \textbf{Example Artifact} & \textbf{Key Goal} \\
+        \toprule % Толстая линия сразу под строкой заголовков (была \midrule, стала \toprule)
+        \textbf{Behavioral} & State Machine diagrams, Use Case scenarios. & Define system reactions to events and describe logical transitions between states. \\
+        \midrule % Тонкая линия между строками данных
+        \textbf{Interface} & API descriptions (e.g., header files), data formats, call sequences. & Clearly separate zones of responsibility between components; define the "contract." \\
+        \midrule % Тонкая линия между строками данных
+        \textbf{Architectural} & Layer and module interaction diagrams, data flow diagrams. & Define the overall topology of the system and how components are interconnected. \\
+        \midrule % Тонкая линия между строками данных
+        \textbf{Temporal / Cyclic} & Timing diagrams, load analysis, deadline specifications. & Design and verify temporal characteristics, calculate loads, ensure synchronization. \\
+        \midrule % Тонкая линия между строками данных
+        \textbf{Diagnostic} & Tables of error codes, descriptions of recovery strategies (fallback). & Design the system's behavior during failures and faults, ensuring \term{fault tolerance}. \\
+        \bottomrule % Толстая линия в самом конце таблицы
+    \end{tabular}
+\end{table}
+
+These models do not have to be formal diagrams. The important thing is that they exist in an explicit, team-wide understandable form and provide answers to the questions posed.
+
+\subsection{A Living Model Example: Plan-Ahead Thinking}
+
+Let's see how this works in practice. Imagine we are designing one of the key components of our future system—a trajectory interpolator. Its task is to build a smooth path between two points in space. Before writing a single line of code, we apply "plan-ahead thinking" and create its model.
+
+\begin{tipbox}{Engineering Tip: Component Design for a Trajectory Interpolator}
+\textbf{Interface Model:}
+\begin{itemize}
+    \item \textbf{Input:} A list of target points with motion parameters (coordinates, motion type, velocity).
+    \item \textbf{Output:} The robot's position and orientation at a specific moment in time $t$.
+\end{itemize}
+
+\textbf{Behavioral Model:}
+\begin{itemize}
+    \item Performs linear (LIN) and joint (PTP) interpolation.
+    \item Applies a trapezoidal or S-shaped velocity profile.
+    \item Manages its internal state (current time along the trajectory).
+\end{itemize}
+
+\textbf{Contract Model (Constraints):}
+\begin{itemize}
+    \item Input points must be sorted by time or sequence.
+    \item Velocity and acceleration cannot be negative.
+    \item Upon receiving a new target during motion, the old trajectory must be smoothly blended or canceled (e.g., blending or cancel strategy).
+\end{itemize}
+
+\textbf{Scenario and Fault Model (Diagnostics):}
+\begin{itemize}
+    \item \textbf{Scenario "Empty Buffer":} What to do if no points are received? \textit{Solution: Remain in the current position.}
+    \item \textbf{Scenario "Abrupt Target Change":} How to react to a command that requires physically impossible acceleration? \textit{Solution: Limit acceleration to the maximum value and issue a warning.}
+    \item \textbf{Scenario "Slow Data Source":} What if the planner provides points with a delay? \textit{Solution: Switch to a waiting mode or stop smoothly if the deadline for the next point is exceeded.}
+\end{itemize}
+\end{tipbox}
+
+This is a living model. It's not drawn in UML, but it exists as a clear description. It can be discussed with colleagues, tests can be written based on it, and it serves as a reliable guide for implementation. We have thought about behavior, interfaces, and failures before we started writing code.
+
+\section{The V-Model and Requirements: From Idea to Verification}
+
+When the topic of systems engineering comes up, most people immediately picture the \term{V-Model}. This diagram has truly become a symbol of the discipline. But unlike many "models for models' sake," the V-Model is genuinely useful—especially in projects like robot control, where system behavior unfolds over time and cannot be simply "coded up."
+
+\begin{principlebox}{Important: An Engineer Without a Model}
+An engineer without a model is like a pilot without instruments. As long as the sky is clear, they fly. The moment fog rolls in, they crash. You cannot build a controller architecture if you do not understand what it is you are building.
+\end{principlebox}
+
+What is the V-Model, in essence? It is not just a visual representation of development stages. It is a way of thinking that forces us, at every step down (from the general idea to the details), to immediately plan the corresponding step up (from verifying the details to accepting the whole system). Imagine you are building a bridge. During the design phase of a truss (a step down), you must immediately plan how you will test the strength of that very truss after it is manufactured (a step up).
+
+In the V-Model, every design step on the "left side" is necessarily accompanied by a future testing step on the "right side."
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a more detailed V-Model diagram
+    \begin{infobox}{The Classic V-Model}
+        \begin{verbatim}
+ User Requirements -\-------------/-Acceptance Testing
+                      \------------/ 
+   System Architecture-\----------/- System Testing
+                        \--------/ 
+       Component Design -\------/- Integration Testing
+                          \----/
+  Detailed Design & Code  -\--/- Unit Testing
+                            \/
+                    [Implementation] 
+        \end{verbatim}
+    \end{infobox}
+    \caption{The classic V-Model: A mirror image of decomposition in integration and verification.}
+    \label{fig:v_model}
+\end{figure}
+
+
+
+
+\subsection{The Left and Right Branches of the V-Model}
+
+The V-Model consists of two main parts, or "branches," that symmetrically mirror each other.
+
+\subsubsection{The Left Branch: The Path Down (Decomposition and Design)}
+This is the path from an abstract idea to the concrete details of implementation. At each level, we answer the questions "What?" and "How?", progressively detailing the system.
+
+\textbf{Level 1: User Requirements}
+This is the highest point. Here, we define what the system should do from the end user's or business's perspective.
+\begin{itemize}
+    \item \textit{Question:} What does our user need?
+    \item \textit{Example:} "The robot must be able to pick up part A from point 1 and place it at point 2 with an accuracy of ±0.5 mm."
+\end{itemize}
+
+\textbf{Level 2: System Architecture}
+Here we break down the entire system into major logical blocks (subsystems) and define how they will interact.
+\begin{itemize}
+    \item \textit{Question:} What are the major parts of our system?
+    \item \textit{Example:} "The system will consist of a GUI, a Trajectory Planner, a Real-Time Motion Core, and a Hardware Abstraction Layer (HAL)."
+\end{itemize}
+
+\textbf{Level 3: Component Design}
+Each major block is detailed down to the level of individual components or modules. We define their interfaces and responsibilities.
+\begin{itemize}
+    \item \textit{Question:} What modules do we need in each subsystem, and what do they do?
+    \item \textit{Example:} "The Planner will contain a Kinematics module, an Interpolation module, and a Limits Check module."
+\end{itemize}
+
+\textbf{Level 4: Detailed Design \& Code}
+This is the lowest level, where we define algorithms, data structures, and, finally, write the code.
+\begin{itemize}
+    \item \textit{Question:} How is each module structured internally?
+    \item \textit{Example:} "The Kinematics module will use a numerical Newton-Raphson method to solve the IK."
+\end{itemize}
+
+\subsubsection{The Right Branch: The Path Up (Integration and Verification)}
+This is the path of assembly and verification, which mirrors the left branch. We move from verifying the smallest details to accepting the entire system, ensuring at each step that the components designed on the corresponding left level work correctly.
+
+\textbf{Level 4: Unit Testing}
+We verify that the smallest unit of code (a function, a class) works as intended in the detailed design.
+\begin{itemize}
+    \item \textit{Goal:} Verify the correctness of an algorithm.
+    \item \textit{Example:} "A test verifies that our IK implementation for a given set of joint coordinates returns the correct Cartesian pose."
+\end{itemize}
+
+\textbf{Level 3: Integration Testing}
+We verify that the components designed at Level 3 work correctly together.
+\begin{itemize}
+    \item \textit{Goal:} Verify the correctness of module interactions.
+    \item \textit{Example:} "A test verifies that the Planner correctly calls the Kinematics module and processes its result."
+\end{itemize}
+
+\textbf{Level 2: System Testing}
+We verify that the entire software system, when assembled (without real hardware, e.g., in a simulation), meets the architectural requirements.
+\begin{itemize}
+    \item \textit{Goal:} Verify the correctness of the entire system's operation as a whole.
+    \item \textit{Example:} "We issue a command in the simulator to move from point A to point B and verify that the generated trajectory matches expectations."
+\end{itemize}
+
+\textbf{Level 1: Acceptance Testing}
+We verify that the finished system (often on real hardware) satisfies the initial user requirements.
+\begin{itemize}
+    \item \textit{Goal:} Verify that we built what the customer asked for.
+    \item \textit{Example:} "On the real robot, we perform the placement of part A from point 1 to point 2 and use a measurement tool to verify that the positioning accuracy is within ±0.5 mm."
+\end{itemize}
+
+\begin{tipbox}{Engineering Tip: The Core Idea of the V-Model}
+The key idea of the V-Model is that tests for the right branch begin to be designed concurrently with the development of the corresponding level on the left branch. You cannot write a good unit test if you don't have a clear detailed design for the component. You cannot conduct acceptance testing if you don't have measurable user requirements.
+\end{tipbox}
+
+Thus, the V-Model forces us to think about verification from the very beginning, transforming development from a linear process into a disciplined and controlled cycle.
+
+\subsection{Traceability as the Key to Reliability}
+
+So, we have good, verifiable requirements. But that's not enough. We need to ensure \term{traceability}—the ability to trace the connection from an initial requirement through all levels of design to specific lines of code and back to the tests that verify that requirement.
+
+Traceability is not bureaucracy. It is the map of your system, which answers the questions "Why was this code written this way?" and "What are we verifying with this test?".
+
+Let's look at a complete example for one of our requirements.
+
+\begin{tipbox}{Example of Traceability: From Requirement to Test}
+\textbf{Requirement (User Level):} "The robot stops upon a 'Stop' command no later than 10 ms."
+
+$\rightarrow$ \textbf{Architectural Decision (System Level):} The system introduces components responsible for fast reaction: a Motion Limiter, which can instantly nullify the target velocity, and a Watchdog Timer to control the reaction time.
+
+$\rightarrow$ \textbf{Implementation (Code Level):} The Motion Limiter's code includes logic for nullifying the target and saturating commands. The main loop's code includes handling of the emergency stop flag.
+
+$\rightarrow$ \textbf{Unit Test:} A test is created, \hcode{motion\_limiter\_stop\_test}, which verifies that calling the `stop()` method correctly resets the internal state of the Limiter.
+
+$\rightarrow$ \textbf{Integration Test:} A test is created that simulates feeding a 'Stop' command into the main control loop, and a logger is used to verify that the command to the servo drive is nullified within the specified time (e.g., within 2-3 RT-Core cycles).
+
+$\rightarrow$ \textbf{Acceptance Test:} On a real robot or an HIL-stand, a 'Stop' command is issued during motion. An oscilloscope or a high-precision logger is used to measure the real time from the command's issuance to the complete stop of the drives. The result is compared with the 10 ms requirement.
+\end{tipbox}
+
+As you can see, a single requirement permeates the entire system and the entire V-Model. This end-to-end connection is the essence of traceability.
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{Traceability Flowchart}
+        \texttt{Requirement (PDF) $\rightarrow$ Architectural Block $\rightarrow$ Module/Class (.h/.cpp) $\rightarrow$ Unit Test (.cpp)}
+    \end{infobox}
+    \caption{A simple diagram illustrating the traceability path from requirement to test.}
+    \label{fig:traceability_flow}
+\end{figure}
+
+
+\section{Decomposition, Interfaces, and Reliability: Building the Framework}
+
+We have established that a system is not a chaotic collection of code, but an ordered structure. But how do we create this order? The construction of a framework that is robust, reliable, and ready for future changes begins with three pillars of system design: proper decomposition, clear interfaces, and built-in reliability.
+
+In this section, we will discuss how to correctly divide a system into parts, how to define the boundaries between them, and why thinking about failures must start from day one.
+
+\subsection{Proper Decomposition: Not by Folders, but by Responsibility}
+
+One of the most destructive mistakes in building an architecture is substituting meaningful decomposition with project structure. When you see folders named `utils`, `core`, `helpers`, or `control` in a project, it's a warning sign. This is not architecture. This is just a way to arrange files into folders.
+
+Imagine you are designing a city. A poor decomposition would be to divide it into "Buildings," "Roads," and "Utilities" districts. As a result, to build a single house, you would have to coordinate actions between three different departments that know nothing about each other. It's chaos.
+
+A proper decomposition is to divide the city into autonomous districts: "Residential Area," "Industrial Zone," "Business Center." Each district has its own buildings, roads, and utilities. Each district solves its own tasks and has clear transport arteries (interfaces) for communication with others.
+
+\begin{dangerbox}{Anti-Pattern: Decomposition by Folder Structure}
+If you have moved the code for solving inverse kinematics into a separate file called \hcode{inverse\_kinematics.cpp} and put it in a folder named \hcode{kinematics}, you haven't created a module yet. You have just neatly arranged your files. True decomposition begins with understanding responsibilities and data flows.
+\end{dangerbox}
+
+What is "proper" decomposition? It is the division of the system into independent, autonomous units that have the following properties:
+
+\begin{itemize}
+    \item \textbf{High Cohesion:} Everything inside a component serves a single, well-defined purpose. For example, a "Kinematic Solver" component deals only with kinematics and nothing else.
+    \item \textbf{Low Coupling:} A component should know as little as possible about the internal workings of other components. Ideally, it communicates with them only through stable, well-documented interfaces.
+\end{itemize}
+
+
+
+\begin{table}[h!]
+    \caption{Traits of a Proper vs. Improper Module}
+    \label{tab:good_vs_bad_module}
+    \centering
+    % Increase row spacing
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{p{0.2\textwidth} p{0.35\textwidth} p{0.35\textwidth}}
+        \toprule % Thick line before the first row (header)
+        \textbf{Characteristic} & \textbf{Improper Module (Just a File)} & \textbf{Proper Module (A Component)} \\
+        \toprule % Thick line immediately under the header row (was \midrule, changed to \toprule)
+        \textbf{Purpose \& Responsibility} & Vague. The module does several unrelated things (e.g., calculates kinematics and writes logs). Logic "leaks" from other modules. & A single, clearly defined purpose. All internal logic serves only this purpose. \\
+        \midrule % Thin line between data rows
+        \textbf{Autonomy} & Cannot work without a dozen other "helper" modules. Depends on global states. & Capable of working in isolation. All dependencies are passed explicitly through interfaces. \\
+        \midrule % Thin line between data rows
+        \textbf{Testability} & Impossible to test without running the entire system or creating complex mock objects. & Easily testable in isolation (unit testing), as its inputs and outputs are well-defined. \\
+        \midrule % Thin line between data rows
+        \textbf{Replaceability} & Cannot be replaced without rewriting code in neighboring modules that directly depend on its internal implementation. & Can be painlessly replaced with another implementation of the same interface (e.g., swapping out the kinematics solver). \\
+        \midrule % Thin line between data rows
+        \textbf{Error Handling} & Crashes itself and possibly brings down the entire system with it. Has no recovery strategy. & Fulfills its contract even in case of failure: reports an error through a defined channel and transitions to a safe state. \\
+        \bottomrule % Thick line at the very end of the table
+    \end{tabular}
+\end{table}
+
+\begin{principlebox}{Important: Good vs. Bad Decomposition}
+\textbf{Example of poor decomposition:} A module for solving IK directly calls a trajectory planner, which, in turn, directly accesses the hardware driver (HAL). This violates hierarchy and responsibility. The planner should not know about drivers, and kinematics should not know about planning.
+
+\textbf{Example of good decomposition:} The system is divided into hierarchical layers, where each layer communicates only with its neighbors above and below through well-defined interfaces.
+\end{principlebox}
+
+Proper decomposition is the foundation upon which all other properties of good architecture are built: reliability, testability, extensibility, and maintainability. In the next section, we will look at how this principle is realized through the creation of functional layers.
+
+\subsection{Functional Layers of Architecture}
+
+So, we divide the system not by folders, but by purpose. One of the most proven and reliable methods for meaningful decomposition is the division into \textbf{functional layers}. A layered architecture arranges components into a hierarchy, where each higher-level layer uses the functionality of a lower-level layer through well-defined interfaces, without knowing its internal implementation.
+
+This is similar to the OSI model in networking: the application layer doesn't know how the physical layer encodes bits into electrical signals; it simply requests the "send data" service.
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a layered architecture diagram
+    \begin{infobox}{Hierarchical Layer Diagram}
+        \textbf{Integration Layer (GUI, External Systems)}\\
+        $\downarrow$ (Commands) \quad $\uparrow$ (Statuses) \\
+        \textbf{Coordination Layer (State Management, Logic)}\\
+        $\downarrow$ (Tasks) \quad $\uparrow$ (Results) \\
+        \textbf{Computation Layer (Kinematics, Planning)}\\
+        $\downarrow$ (Setpoints) \quad $\uparrow$ (Feedback) \\
+        \textbf{Hardware Abstraction Layer (Drivers, Hardware)}\\
+    \end{infobox}
+    \caption{A layered architecture for a robot control system.}
+    \label{fig:layered_architecture}
+\end{figure}
+
+In our project, we can identify the following functional layers, as shown in Table \ref{tab:functional_layers}.
+
+
+
+\begin{table}[h!]
+    \caption{Functional Layers of the Architecture}
+    \label{tab:functional_layers}
+    \centering
+    % Increase row spacing
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{p{0.2\textwidth} p{0.4\textwidth} p{0.3\textwidth}}
+        \toprule % Thick line before the first row (header)
+        \textbf{Layer} & \textbf{Purpose} & \textbf{Example Components} \\
+        \toprule % Thick line immediately under the header row (was \midrule, changed to \toprule)
+        \textbf{Integration} & Communication with the outside world: users, other machines, cloud services. & GUI bridge, network protocol adapter, data logger. \\
+        \midrule % Thin line between data rows
+        \textbf{Coordination} & Management of high-level logic and system state. Orchestration of computational components. & Motion manager, state machine, safety supervisor. \\
+        \midrule % Thin line between data rows
+        \textbf{Computation} & Execution of complex algorithmic tasks: mathematics, planning, data processing. & Kinematics solver, trajectory interpolator, path planner, camera data processor. \\
+        \midrule % Thin line between data rows
+        \textbf{Hardware Abstraction (HAL)} & Abstraction over physical hardware. Providing unified access to the hardware. & Servo drive driver, interface for receiving encoder data, brake controller. \\
+        \bottomrule % Thick line at the very end of the table
+    \end{tabular}
+\end{table}
+
+This separation allows us, for example, to completely replace the graphical interface without touching a single line of code in the coordination or computation layers.
+
+\subsection{The Engineering Interface: Not Just an API, but a Boundary of Thought}
+
+We talk a lot about "interfaces" between layers and components. In the programming world, an interface is often understood as an API (Application Programming Interface)—a set of public functions that a class or library provides. But in systems engineering, this concept is much deeper.
+
+\begin{principlebox}{Important: The Engineering Interface}
+An engineering interface is not just a list of functions. It is a comprehensive \textbf{contract} that describes all aspects of the interaction between two components.
+\end{principlebox}
+
+A true engineering contract must include:
+\begin{itemize}
+    \item \textbf{Data Format and Semantics:} Not just "pass a number," but "pass the encoder rotation angle in ticks, where 1024 ticks correspond to one full revolution." The meaning of each transmitted parameter is described.
+    \item \textbf{Timing and Context of Calls:} When can data be requested? How often? Can it be done from a real-time loop? What is the maximum response time (deadline) guaranteed by the component?
+    \item \textbf{Trust and Control (Preconditions and Postconditions):} What conditions must be met before calling the component (e.g., "the system must be initialized")? What guarantees does the component provide after completing its work? Does it check its input data for correctness?
+    \item \textbf{Behavior on Failure Contract:} What will happen if the component cannot perform its work? Will it report this through a special status, return a null value, or transition to a safe state? What does the calling party expect in case of a failure?
+\end{itemize}
+
+Let's consider an example of such a contract for a hypothetical component that solves inverse kinematics. Instead of code, let's describe its essence.
+
+\begin{tipbox}{Engineering Tip: A Conceptual Contract for an IK Solver}
+\textbf{Purpose:} To convert a desired Cartesian tool pose (TCP) into a robot joint configuration.
+
+\textbf{Input Data:}
+\begin{itemize}
+    \item \textbf{Target Pose:} The position and orientation of the TCP in the base coordinate system.
+    \item \textbf{Initial Guess:} The current or a close-to-target joint configuration. This is necessary to help the solver choose one of the many possible solutions (e.g., "elbow up" or "elbow down").
+\end{itemize}
+
+\textbf{Output Data:}
+\begin{itemize}
+    \item \textbf{Result:} The joint configuration that corresponds to the target pose.
+    \item \textbf{Success/Failure Status:} A clear indicator of whether a solution was found.
+\end{itemize}
+
+\textbf{Guarantees (Postconditions):}
+\begin{itemize}
+    \item In case of success, it is guaranteed that the forward kinematics of the found joint configuration will yield the original target pose with a given tolerance.
+    \item It is guaranteed that the solution search time will not exceed a set deadline (e.g., 300 microseconds), which is critical for predictability.
+\end{itemize}
+
+\textbf{Failure Handling:}
+\begin{itemize}
+    \item If the target pose is unreachable or is in a singularity, the component must not "crash" or hang. It is obligated to return a failure status so that the higher-level component (e.g., the planner) can handle this situation correctly.
+\end{itemize}
+\end{tipbox}
+
+\begin{principlebox}{Important: Designing Boundaries}
+Designing interfaces is designing boundaries. The stronger and more thought-out your boundaries (contracts) are, the more independent, reliable, and testable your components (fortress-cities) will be, and the less chaos there will be in your system.
+\end{principlebox}
+
+\section{Typical Design Mistakes}
+
+Almost every engineer, when transitioning from algorithms to building systems, makes the same mistakes. This is not a sign of foolishness or incompetence, but rather a natural result of being taught in universities to "write code," not to "design behavior."
+
+Architectural mistakes are not always immediately visible. A prototype might work perfectly. It might fly during a demo. But then three months pass, and you need to change the logic, add a safety module, or integrate new hardware—and the entire, seemingly stable system starts to crack at the seams and break from the slightest touch.
+
+Below, we will analyze the most common and dangerous failures in thinking that every team in the industry encounters. These are, in a way, architectural "landmines" that are best avoided.
+
+\begin{dangerbox}{Danger: The Compiler Won't Catch These}
+Architectural errors are not caught by the compiler. They do not cause syntax errors or crashes during compilation. They are embedded at the moment of thought and manifest much later—in the form of fragility, impossibility of extension, and nightmarish debugging.
+\end{dangerbox}
+
+\subsection{Violation of Layers: "Everything is Connected to Everything"}
+
+This is, perhaps, the most major and most seductive mistake. It arises when a developer, striving to get a quick result, creates a "shortcut" between components that should not know about each other.
+
+\paragraph{Symptoms of "Spaghetti Architecture"}
+
+You have definitely encountered a violation of layers if in your project:
+\begin{itemize}
+    \item \textbf{The Graphical User Interface (GUI) directly calls the inverse kinematics (IK) solver.} It seems convenient: press a button, get a result. But this means the GUI now knows about the existence and operational details of a low-level mathematical module.
+    \item \textbf{The safety module directly writes to the servo drive's registers.} This is a fast way to stop a motor, but it completely bypasses the coordination layer that should be managing the system's state.
+    \item \textbf{The trajectory planner calls functions from ROS or another middleware platform.} This binds your core logic to a specific external technology, making it non-portable and difficult to test.
+\end{itemize}
+
+The result, instead of a strict hierarchy of layers, is a tangled ball of dependencies, often called "spaghetti architecture" or the "big ball of mud."
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a chaos diagram
+    \begin{infobox}{Chaos instead of layers.}
+        \texttt{A diagram showing blocks (GUI, Planner, Kinematics, Driver) connected by chaotic arrows that cross all levels. The GUI calls the Driver, Kinematics calls the GUI, etc.}
+    \end{infobox}
+    \caption{Chaos instead of layers: components are directly connected, violating the hierarchy.}
+    \label{fig:chaos_vs_layers}
+\end{figure}
+
+\textbf{Why is this mistake so tempting?}
+
+At first glance, a direct call saves time. There is no need to create intermediate interfaces or pass data through several layers. You can just grab and call the needed function from anywhere. This gives the illusion of rapid progress. But this is \term{technical debt}, and the interest on it will start to accrue very quickly.
+
+\textbf{Catastrophic Consequences}
+
+\begin{dangerbox}{Danger: The Consequences of Layer Violation}
+\begin{itemize}
+    \item \textbf{Fragility:} Any change in a "lower" component (e.g., replacing the IK solver) causes a cascade of edits in all "upper" components that depended on it (including the GUI). The system breaks from the slightest change.
+    \item \textbf{Impossibility of isolated testing:} You cannot test the trajectory planner without launching ROS. You cannot verify the GUI logic without connecting a real IK solver. Unit tests become impossible.
+    \item \textbf{Impossibility of reuse:} A module that is hard-wired to the GUI and drivers cannot be reused in another project or for simulation.
+    \item \textbf{Hidden logic and duplication:} When the GUI can directly control a motor, safety logic and limit checks are either duplicated in multiple places or not implemented at all because it's "inconvenient."
+\end{itemize}
+\end{dangerbox}
+
+The correct approach requires discipline: each component must communicate only with its immediate neighbors in the hierarchy through well-defined, abstract interfaces. Yes, at the initial stage, this requires a bit more time for designing these interfaces. But in the long run, this is the only way to build a system that can be maintained, expanded, and trusted.
+
+\subsection{Absence of State in Modules}
+
+In functional programming and when writing simple utilities, stateless modules are the gold standard. Such a module represents a "pure function": it receives data as input, performs an operation on it, and returns a result. Its behavior depends only on the current input data, and it does not "remember" what happened before. For the same inputs, it will always return the same output.
+
+At first glance, this is a very attractive concept. Such modules are easy to test, their behavior is completely predictable, and they have no hidden side effects. On a demo stand, where we give a command once and get a result, they work perfectly.
+
+\begin{dangerbox}{Danger: The "Pure Function" Trap}
+The temptation to create exclusively stateless modules is great because they are simple. However, a real control system lives \textit{in time}. It must react not only to the current moment but also to its own prehistory. A module that does not remember the past cannot adequately react to the present and predict the future.
+\end{dangerbox}
+
+When a module has no internal state, the system loses its "memory" and, with it, the ability for complex, adaptive behavior. \textbf{What do we lose without state?}
+
+\begin{itemize}
+    \item \textbf{Hysteresis (debounce protection):} Imagine a thermostat that should turn on a heater at temperatures below 20°C. If the temperature hovers right at this mark (19.9°, 20.0°, 19.9°...), a stateless thermostat will constantly turn the relay on and off, which will quickly wear it out. A thermostat with state ("memory") implements hysteresis: it will turn on at 19.5°C and turn off only at 20.5°C. It "remembers" which state it is in and does not react to minor fluctuations. In robotics, this is critical for processing signals from buttons or sensors.
+    \item \textbf{Filtering and Smoothing:} Data from real sensors (encoders, accelerometers) is always noisy. To get a stable estimate of, for example, velocity, a single measurement is not enough. It is necessary to use filters (e.g., a Kalman filter or a simple moving average) that accumulate and average data over a certain period. For this, the filter must store its state—previous measurements and its own internal variables.
+    \item \textbf{Error Accumulation (Integral component of PID):} To accurately reach a target and compensate for constant disturbances (like gravity), a PID controller must accumulate the error over time (the integral part). This accumulated value is its internal state. Without it, the controller can never completely eliminate a static error.
+    \item \textbf{Time Delays and Deadlines:} To determine that another component has "hung" or stopped responding, a module must "remember" when it last received data from it. This state (the timestamp of the last response) allows the implementation of watchdogs and timeouts.
+\end{itemize}
+
+\begin{principlebox}{Important: A System Without Memory}
+A system without memory cannot learn, adapt, or protect itself. The absence of state in key modules turns a control system into a simple calculator that can only react to momentary inputs but is incapable of meaningful, time-extended behavior.
+\end{principlebox}
+
+When designing a component, always ask yourself: "Does this module need to remember something about the past to make the right decision in the present?". If the answer is "yes," then this module must have an internal state. Your task as an architect is to design this state in such a way that it is encapsulated, manageable, and predictable.
+
+
+\subsection{The "Swiss Army Knife" Universal Module}
+
+This mistake is a direct consequence of violating the principles of decomposition we discussed earlier. It consists of creating one giant component that tries to do everything at once. This is the so-called "God Object" or, as we've named it, the "Swiss Army knife" module.
+
+A Swiss Army knife is an excellent tool for a hike. It has a blade, a screwdriver, and a corkscrew. But have you ever seen a professional auto mechanic repair an engine with just a Swiss Army knife? No. They use a set of specialized tools: wrenches, socket heads, a torque wrench. Each tool is perfectly suited for its task.
+
+It's the same in programming. A module that tries to be everything at once ends up doing nothing well.
+
+\paragraph{Symptoms of a "Swiss Army Knife" module}
+
+You can easily recognize such a module in your project. It's usually one huge class or file that:
+\begin{itemize}
+    \item Solves inverse kinematics.
+    \item Simultaneously writes logs to a file.
+    \item Sends commands to servo drives.
+    \item Interacts with ROS to get data.
+    \item Stores the global state of the entire system.
+    \item And, possibly, even draws something in the GUI.
+\end{itemize}
+
+Such a component turns into an architectural "black hole": it has a huge number of dependencies and responsibilities, pulling in logic from all levels of the system.
+
+\begin{dangerbox}{Anti-Pattern: The "God Object" Module}
+This module violates one of the fundamental principles of good design—the \textbf{Single Responsibility Principle (SRP)}. A component should have only one reason to change. If you change the logging method, the kinematics code should not be affected. If you change the IK algorithm, the servo drive commands should not be touched. In a "Swiss Army knife" module, all of this is mixed together.
+\end{dangerbox}
+
+\textbf{Why is this approach so destructive?}
+
+The consequences of creating such monoliths are always the same and always dire:
+\begin{itemize}
+    \item \textbf{Impossibility of reuse:} You can't take the "kinematics piece" from this module and use it in another project, because it's hard-wired to the logging, ROS, and GUI of your current project.
+    \item \textbf{Nightmarish testing:} How do you test the IK logic in isolation if, for it to work, you need to bring up the entire ROS infrastructure, launch the GUI, and connect a logger simulator? It's practically impossible. The module becomes untestable.
+    \item \textbf{Fragility and cascading changes:} Since everything is connected to everything, a change in one part of the module (e.g., in the log format) can unexpectedly break another part (e.g., sending commands). Debugging turns into a torturous search for non-obvious connections.
+    \item \textbf{Complexity of understanding:} It is practically impossible for a new developer (or for you, six months later) to make sense of the tangled logic of such a monster. To understand how one function works, you need to read and understand thousands of lines of code that have no direct relation to it.
+\end{itemize}
+
+\begin{principlebox}{Important: Build a Team, Not a Hero}
+Don't create heroes who save the world single-handedly. Create a team of professionals where each member does their job, but does it well. Your task as an architect is not to write one clever class, but to define the boundaries and contracts for a whole team of classes that work together.
+\end{principlebox}
+
+If you see that a component in your system is starting to "bloat" and take on responsibilities that are not its own, it's a sure sign that it's time to refactor and decompose it. Divide it into several smaller, focused components, each with a single, well-defined area of responsibility. This will pay for itself a hundredfold during the support and development phase.
+
+
+\subsection{Safety "For Later" and Logging as \hcode{printf}}
+
+These two mistakes often go hand in hand. They arise from the dangerous misconception that the engineer's main task is to implement the "positive scenario" (when everything works as it should), and that error handling and diagnostics can be added later, "if there is time." In industrial development, there is never time for this.
+
+\textbf{Mistake 1: Safety as an Option}
+
+This is one of the most common and most dangerous strategic mistakes. The development team focuses on making the robot move beautifully from point A to point B. On the demo stand, everything works perfectly. But then, under real conditions, a failure occurs: the connection with the encoder is lost, a motor overheats, the IK-solver fails to find a solution for a complex point. And there is no reaction to these events. None. Because "we didn't have time to implement it."
+
+\begin{dangerbox}{Danger: A System Without a Safety Net}
+A system in which the reaction to failures has not been designed is not a system. It is a prototype, dangerous for the equipment, the process, and, most importantly, for people.
+\end{dangerbox}
+
+The correct approach is that a strategy of \term{graceful degradation} must be built into the architecture from the very beginning. Each component must "know" what to do if something goes wrong.
+\begin{itemize}
+    \item What does the planner do if the IK solver returns an error? It must not crash. It must cancel the current task and report it upwards.
+    \item What does the RT-core do if data from the driver hasn't arrived for more than 10 ms? It must not continue sending old commands. It must initiate a smooth stop procedure.
+    \item What does the system do if the operator tries to set too high a speed? It must not blindly execute it. It must limit the speed to the maximum allowable and issue a warning.
+\end{itemize}
+
+\begin{principlebox}{Important: Safety is a Fundamental Property}
+Safety is not an additional "feature." It is a fundamental property of the architecture. You cannot "add" safety at the end. You either design a safe system from the beginning, or you don't design one at all.
+\end{principlebox}
+
+\textbf{Mistake 2: Logging and Telemetry as \hcode{printf}}
+
+This mistake is a direct path to creating a system that is impossible to debug in real conditions. During the development phase, engineers often leave debug outputs in the code: `std::cout`, `qDebug`, `printf`. This helps in the moment to understand what is happening. But when the system is installed at a factory and a problem arises, this approach becomes useless.
+
+Why is simple console output bad?
+\begin{itemize}
+    \item \textbf{No context:} You see an "Error!" message in the console, but you don't know which module sent it, at what moment in time, and under what circumstances.
+    \item \textbf{No severity levels:} Error messages are mixed with debug information. It's impossible to separate critical events from informational ones.
+    \item \textbf{No structure:} A stream of text messages cannot be automatically analyzed, filtered, or aggregated.
+    \item \textbf{Data loss:} If the system reboots, the entire console history is lost.
+    \item \textbf{Impact on performance:} Uncontrolled console output from a real-time loop can violate determinism and affect performance.
+\end{itemize}
+
+An industrial system requires a centralized logging and telemetry system. This is not just text output, but a structured recording of events, where each message has at least:
+\begin{itemize}
+    \item \textbf{A precise timestamp:} When did it happen?
+    \item \textbf{A severity level:} How important is it (Debug, Info, Warning, Error, Critical)?
+    \item \textbf{A source:} Which component or module generated this event?
+    \item \textbf{A payload:} The message itself or structured data.
+\end{itemize}
+
+\begin{tipbox}{Engineering Tip: Logging is Your Black Box}
+Logging is the "black box" of your system. When a failure occurs in the field, logs will be the only thing that will help you understand the cause. Do not skimp on designing a good logging system.
+\end{tipbox}
+
+Refusing to design for safety and diagnostics from the very beginning is a guarantee that you will be spending sleepless nights trying to debug inexplicable problems on a working production line.
+
+\section{Criteria for a Mature Architecture and Conclusion}
+
+So, we have examined the traps of thinking and the typical design mistakes. Now, let's imagine that your project is starting to come to life: there's a graphical interface, there are commands, the robot is moving in a simulator. The key, most important question arises: is this already a system, or is it still just a collection of code that hasn't fallen apart yet?
+
+The answer to this question defines the difference between a prototype and an industrial product. Below are not marketing slogans, but concrete engineering signs by which you can assess the maturity of an architecture. This is a kind of checklist that will help you understand where you stand.
+
+\begin{principlebox}{Conclusion to the Chapter: Architecture is Control Over Chaos}
+An industrial robot controller is not just an algorithm. It is an engineering system that must live for years in a complex, changing environment, interact safely with people and equipment, react to errors, and be ready for evolution. A raw project relies on luck and the talent of individual developers. A mature architecture manages complexity and minimizes risks with the help of well-thought-out rules and boundaries.
+\end{principlebox}
+
+
+\renewcommand{\arraystretch}{1.2} % Increase row spacing
+\begin{longtable}{p{0.2\linewidth} p{0.33\linewidth} p{0.33\linewidth}}
+    \caption{Architectural Maturity Map: From a Raw Project to an Engineered System}\label{tab:maturity_map}\\
+    \toprule % Thick line before the first row (header)
+    \textbf{Criterion} & \textbf{"Raw" Project} & \textbf{Mature Architecture} \\
+    \addlinespace[6pt] % Added space after the header row
+    \toprule % Thick line immediately under the header row
+    \endfirsthead
+
+    \multicolumn{3}{c}{\tablename~\thetable{} -- continued from previous page} \\
+    \toprule % Thick line for continued header
+    \textbf{Criterion} & \textbf{"Raw" Project} & \textbf{Mature Architecture} \\
+    \addlinespace[6pt] % Added space after the header row for continued tables
+    \toprule % Thick line for continued header
+    \endhead
+
+    \bottomrule % Thick line at the very end of the table
+    \endfoot
+
+    \bottomrule % Thick line for the last page of the table
+    \endlastfoot
+
+    % Table Content
+    \textbf{Component Isolation} & Everything depends on everything. A change in one class requires edits in ten others. Global variables and singletons control the logic. & Modules are maximally independent and tested separately. Dependencies are inverted and injected via constructors or setters. Communication happens only through interfaces. \\
+    \midrule % Thin line between data rows
+    \textbf{Interfaces} & Calls "for convenience." Methods that are needed "here and now" are made public. Contracts are informal and exist in the developer's head. & Clear, well-thought-out contracts. The interface describes not only functions but also data semantics, temporal guarantees, and behavior on failure. \\
+    \midrule % Thin line between data rows
+    \textbf{Behavior on Failure} & An error leads to an uncontrolled exception or an abnormal termination (crash). The system is fragile. & A strategy of graceful degradation is built into the design. Errors are localized, the system transitions to a safe state, and reports the problem. \\
+    \midrule % Thin line between data rows
+    \textbf{Responsibility by Layer} & The GUI directly controls drivers; the math knows about the network. Architectural layers exist only as folders in the project. & A strict hierarchy of layers. The GUI doesn't know about the hardware; the core doesn't know about the GUI. Each layer communicates only with its neighbors. \\
+    \midrule % Thin line between data rows
+    \textbf{Diagnostics} & Debugging via 'printf' or its analogs. Logs are chaotic, unstructured, without timestamps. After a reboot, all information is lost. & A centralized logging system. Mechanisms for tracing and monitoring state "on the fly" are built in. Diagnostics is a designed feature. \\
+    \midrule % Thin line between data rows
+    \textbf{Integration \& Emulation} & Logic can only be tested on real hardware or in a full build with GUI, ROS, etc. Development slows down. & The system core is fully autonomous and can be tested without GUI or ROS. The hardware layer is abstracted, allowing for easy substitution of real hardware with a simulator (emulator). \\
+    \midrule % Thin line between data rows
+    \textbf{Temporal Model} & Timings and delays are "by eye." 'sleep()' and other unpredictable waiting methods are used. Determinism is absent. & Frequencies and deadlines are clearly defined and verified. Temporal characteristics are part of the interface contract. The system is predictable in time. \\
+    \midrule % Thin line between data rows
+    \textbf{Extensibility} & Any new "feature" breaks the old one. Adding functionality requires massive refactoring and rewriting of existing code. & New behavior is added by implementing existing interfaces or creating new modules without affecting the core. The architecture is ready for evolution. \\
+    \midrule % Thin line between data rows
+    \textbf{Testability} & "End-to-end" testing on a working robot is the only way to verify. Code coverage by tests is low. & A multi-level testing strategy exists: unit tests for each component, integration tests for their connections, and system tests for the entire logic. \\
+\end{longtable}
+
+\subsection{Conclusion to the Chapter: From Code to Mindset}
+
+In this chapter, we made an important transition: from viewing a program as a collection of files with code to understanding it as an engineering system. We saw that a true system is not the sum of its parts, but the coordinated behavior of these parts, subject to common rules and contracts.
+
+We got acquainted with the V-Model not as a diagram, but as a way of thinking that connects design and verification. We learned to distinguish measurable requirements from abstract wishes and understood why traceability is the circulatory system of a reliable project. We analyzed the principles of proper decomposition, which is built on responsibility and data flows, not on folder structure. Finally, we studied the most common architectural mistakes that turn a promising project into a fragile and unsupportable monolith.
+
+If you were able to answer the questions from the maturity table in relation to your own project, it means you are no longer just writing code. You are designing a reliable system. And with it, the future of engineering.
+
+Now, armed with this philosophy and systemic thinking, we are ready to move on to the next part. We will leave behind the general principles and immerse ourselves in the specific language that a robot speaks—the language of mathematics, geometry, and transformations. We will learn how a robot "sees" the world and "thinks" about motion.

@@ -1,0 +1,243 @@
+% ===================================================
+%  ДОКУМЕНТ И ЯЗЫК
+% ===================================================
+\documentclass[11pt, b5paper, oneside]{book}
+
+\usepackage{polyglossia}
+\setdefaultlanguage{english}
+\setotherlanguage{russian}
+
+% ===================================================
+%  ШРИФТЫ (СОВРЕМЕННЫЙ ПОДХОД ДЛЯ LUALATEX)
+% ===================================================
+\usepackage{fontspec}
+\usepackage{unicode-math}
+
+\setmainfont{Libertinus Serif}
+\setsansfont{IBM Plex Sans}
+\setmonofont{IBM Plex Mono}
+\setmathfont{Latin Modern Math}
+
+\usepackage{textcomp}
+\usepackage{alltt}
+% ===================================================
+%  ГЕОМЕТРИЯ СТРАНИЦЫ И ТИПОГРАФИКА
+% ===================================================
+\usepackage[b5paper,margin=18mm]{geometry}
+\usepackage{setspace}
+\setstretch{1.05}
+\usepackage{microtype} % Улучшает внешний вид текста
+\usepackage{ragged2e}  % Для \RaggedRight, \Centering, \RaggedLeft
+
+% ===================================================
+%  КОЛОНТИТУЛЫ
+% ===================================================
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\thepage}
+\fancyhead[RE]{\leftmark}
+\fancyhead[LO]{\rightmark}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% ===================================================
+%  ОФОРМЛЕНИЕ ЗАГОЛОВКОВ И СПИСКОВ
+% ===================================================
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries}
+  {\chaptername~\thechapter}{20pt}{\Huge}
+
+\usepackage{enumitem}
+\setlist[itemize]{nosep,topsep=4pt,parsep=2pt,partopsep=0pt,leftmargin=2em}
+
+% ===================================================
+%  ЦВЕТА, ГРАФИКА И ИКОНКИ
+% ===================================================
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{tikz-cd}
+\usepackage{fontawesome5}
+\usepackage{scalerel}
+\usepackage{xparse}
+
+% --- Кастомные иконки ---
+\NewDocumentCommand\warning{}{\textcolor{orange}{\faIcon{exclamation-triangle}}}
+\NewDocumentCommand\information{}{\textcolor{blue}{\faIcon{info-circle}}}
+\NewDocumentCommand\greenCheck{}{\textcolor{green!60!black}{\faIcon{check-circle}}}
+
+% ===================================================
+%  ПЛАВАЮЩИЕ ОБЪЕКТЫ И ПОДПИСИ
+% ===================================================
+\usepackage{caption}
+\usepackage{float}      % Для управления плавающими окружениями (например, [H])
+\usepackage{placeins}   % Для команды \FloatBarrier
+\captionsetup{justification=justified, singlelinecheck=true}
+
+% ===================================================
+%  ОФОРМЛЕНИЕ КОДА (MINTED + LISTINGS)
+% ===================================================
+% Пакет minted для основной подсветки
+\usepackage{minted}
+
+% Пакет listings для кастомной команды \hcode
+\usepackage{listings} 
+
+% --- Общие настройки для minted ---
+\definecolor{mintedbg}{HTML}{FAFAFA}
+\setminted{
+  bgcolor=mintedbg,
+  frame=lines,
+  framerule=0.4pt,
+  framesep=3mm,
+  fontsize=\footnotesize,
+  breaklines=true,
+  linenos=true,
+  numbersep=5pt,
+  style=default
+}
+
+% --- Создание плавающего окружения для листингов кода minted ---
+\newfloat{listing}{htbp}{lol}
+\floatname{listing}{Listing} % Или "Листинг"
+\captionsetup[listing]{
+    skip=-10pt,
+    belowskip=10pt
+}
+
+% --- Стиль и команда для инлайн-кода (\hcode) через listings ---
+\definecolor{hcode_bg_color}{HTML}{FEFDC4} % Чуть менее яркий желтый
+\lstdefinestyle{highlighted_inline_force_break}{
+  backgroundcolor=\color{hcode_bg_color},
+  basicstyle=\ttfamily\color{blue}\footnotesize,
+  breaklines=true,
+  breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{red}{$\hookrightarrow$}\space},
+}
+\newcommand{\hcode}[1]{\lstinline[style=highlighted_inline_force_break]|#1|}
+
+% ===================================================
+%  ОФОРМЛЕНИЕ ТАБЛИЦ (TABULARRAY)
+% ===================================================
+\usepackage{tabularray}
+\UseTblrLibrary{booktabs} % Подключает функционал booktabs, \usepackage{booktabs} не нужен
+\usepackage{etoolbox}
+
+\newcommand{\tabitem}{\textbullet\hspace{0.5em}}
+\AtBeginEnvironment{longtable}{\small} % Уменьшает шрифт для длинных таблиц
+
+% ===================================================
+%  ЦВЕТНЫЕ БЛОКИ (TCOLORBOX)
+% ===================================================
+\usepackage[most]{tcolorbox}
+\tcbuselibrary{skins, breakable}
+
+% --- Цветовая палитра ---
+\definecolor{NavGreen}{RGB}{46, 139, 87}
+\definecolor{NavGreenBack}{RGB}{240, 248, 240}
+
+%\definecolor{DangerRed}{RGB}{220, 53, 69}
+%\definecolor{DangerRedBack}{RGB}{253, 237, 237}
+
+%
+\definecolor{DangerRed}{RGB}{190, 0, 0}    % Новый глубокий красный для рамки
+\definecolor{DangerRedBack}{RGB}{255, 200, 200} % Новый светло-красный для фона
+
+% Переопределение цветов для DangerBox на "ядовито красный, но светлее"
+%\definecolor{DangerRed}{RGB}{255, 69, 0}    % Яркий, "ядовитый" красно-оранжевый для рамки
+\definecolor{DangerRedBack}{RGB}{255, 230, 230} % Очень светлый, мягкий розово-красный для фона
+
+\definecolor{PrincipleBlue}{RGB}{23, 118, 207}
+\definecolor{PrincipleBlueBack}{RGB}{232, 244, 253}
+
+%\definecolor{TipOrange}{RGB}{253, 126, 20}
+%\definecolor{TipOrangeBack}{RGB}{255, 249, 232}
+
+% Переопределение цветов для TipBox на фиолетовый
+\definecolor{TipOrange}{RGB}{140, 100, 180}    % Новый темно-фиолетовый для рамки (используется как 'TipPurpleFrame')
+\definecolor{TipOrangeBack}{RGB}{245, 240, 255} % Новый светло-фиолетовый для фона (используется как 'TipPurpleBack')
+
+\definecolor{InfoGray}{RGB}{108, 117, 125}
+\definecolor{InfoGrayBack}{RGB}{248, 249, 250}
+
+% --- Базовый стиль для "современных" блоков ---
+\tcbset{
+  bookbox/.style={
+    enhanced, breakable, skin=enhanced, arc=1mm, outer arc=1mm,
+    borderline west={2.5pt}{0pt}{#1},
+    boxrule=0.5pt, colframe=black!15!white,
+    fonttitle=\bfseries, coltitle=black!85!white,
+    fontupper=\small,
+    left=15pt, right=10pt, top=10pt, bottom=10pt,
+    drop fuzzy shadow={black!30!white}
+  }
+}
+
+% --- Кастомные "современные" блоки ---
+\newtcolorbox{navigationbox}[1]{bookbox=NavGreen, colback=NavGreenBack, title={#1}}
+\newtcolorbox{dangerbox}[1]{bookbox=DangerRed, colback=DangerRedBack, title={#1}}
+\newtcolorbox{principlebox}[1]{bookbox=PrincipleBlue, colback=PrincipleBlueBack, title={#1}}
+\newtcolorbox{tipbox}[1]{bookbox=TipOrange, colback=TipOrangeBack, title={#1}}
+\newtcolorbox{infobox}[1]{bookbox=InfoGray, colback=InfoGrayBack, title={#1}}
+
+% --- Кастомные "legacy" блоки ---
+\definecolor{lightbg}{HTML}{F8F8F8}
+\definecolor{lightframe}{HTML}{CCCCCC}
+% \tcbset{ % <-- ВНИМАНИЕ: этот блок глобально переопределит стили выше.
+%   colback=lightbg, colframe=lightframe, sharp corners, boxrule=0.4pt,
+%   left=6pt, right=6pt, top=6pt, bottom=6pt, enhanced,
+% }
+\newtcolorbox{box_important}{colback=red!5!white, colframe=red!75!black, fonttitle=\bfseries, title=Important}
+\newtcolorbox{box_tip}{colback=blue!5!white, colframe=blue!75!black, fonttitle=\bfseries, title=Advise}
+\newtcolorbox{box_danger}{colback=yellow!10!white, colframe=orange!85!black, fonttitle=\bfseries, title=Danger}
+
+% ===================================================
+%  ГИПЕРССЫЛКИ, БИБЛИОГРАФИЯ И ГЛОССАРИЙ
+% ===================================================
+% --- Глоссарий ---
+\usepackage{glossaries}
+\makenoidxglossaries
+\newglossaryentry{production-ready}{name={production-ready}, description={test}}
+\newcommand{\term}[1]{%
+    \ifglsentryexists{#1}
+    {\textit{\gls{#1}}}%
+    {\textbf{\textcolor{purple}{#1}}}%
+}
+
+% --- Библиография (biblatex) ---
+\usepackage[backend=biber,style=ieee,sorting=none]{biblatex}
+\addbibresource{bibliography.bib}
+
+% --- Гиперссылки (hyperref) - грузить одним из последних ---
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=magenta,
+  urlcolor=blue,
+  breaklinks=true % Полезно для длинных URL в библиографии
+}
+
+
+% Пакеты
+\usepackage{fancyhdr}
+\hypersetup{colorlinks=true, urlcolor=blue} % делаем ссылки синими
+\usepackage{lipsum} % для текста-рыбы
+
+%-----------------------------------------------------
+% 1. ОПРЕДЕЛЕНИЕ СТИЛЕЙ КОЛОНТИТУЛОВ
+%-----------------------------------------------------
+
+% Стиль для основных глав
+\fancypagestyle{main}{%
+  %\fancyfoot[RE]{\thepage}
+  \renewcommand{\footrulewidth}{0pt}
+}
+
+% Стиль для вводных страниц и приложений с GitHub ссылками
+\fancypagestyle{github}{%
+  \fancyfoot[C]{\footnotesize \texttt{github.com/hexakinetica/rdt-book \ \ \ \ \ \ \ github.com/hexakinetica/rdt-core}}
+  %\fancyfoot[R]{\thepage}
+  \renewcommand{\footrulewidth}{0.4pt}
+}

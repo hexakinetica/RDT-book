@@ -1,0 +1,43 @@
+\newpage
+\chapter*{The RDT Community} % Более "опенсорсное" название
+\addcontentsline{toc}{chapter}{Project Contributors}
+
+% Вводный абзац с прямым призывом и двумя ссылками
+The Robot Development Toolkit (RDT) is a community-driven, open-source project. This book and the controller it describes are the result of collaborative efforts by an international community of engineers, developers, and robotics enthusiasts. 
+
+We believe that great software is built together. We invite you to become a part of our community. Your ideas, bug reports, fixes, and code contributions make project thrive.
+
+\begin{center}
+    \large
+    \textbf{Join the Conversation and Contribute:}\\[1ex]
+    Book \& Documentation: \href{https://github.com/hexakinetica/rdt-book}{\texttt{github.com/hexakinetica/rdt-book}}\\[1ex]
+    Controller Source Code: \href{https://github.com/hexakinetica/rdt-code}{\texttt{github.com/hexakinetica/rdt-code}}
+\end{center}
+
+Below are just a few of the key contributors whose work has had a significant impact. A full list can always be found in the project's commit history.
+
+% --- Core Team ---
+\subsection*{Core Team}
+
+% Используем тот же стиль, но с небольшими улучшениями форматирования
+\begin{description}
+    \item[Ivan (\href{https://github.com/ivanov-ivan-rdt}{@Ivanov})] \hfill \textbf{Core Architecture, RT Domain} \\
+    \textit{Designed the foundation of the multithreaded architecture and real-time kernel; implemented core synchronization mechanisms.}
+
+    \item[Peter (\href{https://github.com/petrov-petr-rdt}{@Petrov})] \hfill \textbf{Kinematics and Planning} \\
+    \textit{Implemented the mathematical core, including adapters for KDL and Eigen, and developed interpolation and velocity profiling algorithms.}
+
+    \item[Maria (\href{https://github.com/sidorova-maria-rdt}{@Sidorova})] \hfill \textbf{GUI and UX} \\
+    \textit{Designed and developed the entire Qt-based graphical interface, including the 3D visualizer and control panels, making the system intuitive and user-friendly.}
+\end{description}
+
+% --- Contributors List ---
+\subsection*{Key Contributors} % "Key Contributors" звучит более весомо
+
+We are also immensely grateful to the following contributors for their specific bug fixes, feature suggestions, and valuable feedback:
+
+% Используем формат, похожий на Core Team для единообразия
+\begin{itemize}
+    \item \textbf{Sergey Kuznetsov (\href{https://github.com/kuznetsov-sergey-rdt}{@kuznetsov-sergey})}: For developing a multi-layered testing strategy and integrating CI/CD workflows.
+    \item ... and many others whose contributions can be found in the project's commit history.
+\end{itemize}

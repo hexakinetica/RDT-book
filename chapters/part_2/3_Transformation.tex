@@ -1,0 +1,551 @@
+\chapter{The Language of Space: Representing Pose and Orientation}
+\label{ch:math_foundation}
+
+% "What you will learn" box
+\begin{navigationbox}{In this chapter, you will learn:}
+    \begin{itemize}
+        \item The fundamental concepts of \term{Base Frame}, \term{Tool Frame}, and the \term{Tool Center Point} (TCP) that form the basis of all robot programming.
+        \item How to mathematically describe an object's position and, more importantly, its orientation in 3D space.
+        \item A comparative analysis of the three primary tools for representing orientation: Rotation Matrices, Euler Angles, and Quaternions—understanding their strengths, weaknesses, and specific use cases.
+        \item How to use \term{Homogeneous Transformation Matrices} to unify position and orientation into a single, powerful mathematical tool.
+        \item The critical operations of \term{Composition} and \term{Inversion} that allow us to navigate the complex hierarchy of coordinate systems in a real-world robotic cell.
+    \end{itemize}
+\end{navigationbox}
+
+We have now transitioned from the philosophy of engineering to the core mathematics that underpins every industrial controller. If the previous chapters were about the grammar of systems thinking, this chapter is about the vocabulary. We are learning the language a robot uses to understand the world and its place within it: the language of pose, orientation, and transformation.
+
+\section{Fundamental Concepts: TCP, Tool, and Base}
+
+Before we can discuss coordinates, matrices, and transforms, we must agree on the terminology. In industrial robotics, three fundamental concepts form the basis for describing any task. Without a clear understanding of them, it is impossible to give a robot a meaningful command.
+
+\subsection{Base Frame (The Robot's Origin)}
+
+The \term{Base Frame} is the main, stationary coordinate system relative to which all robot movements and the positions of objects in its workspace are defined. It is the "origin point" of the entire robotic workspace.
+
+\begin{itemize}
+    \item \textbf{Where is it?} Most often, its origin coincides with the center of the robot's own base. However, in complex industrial cells, the base system might be "attached" to the corner of an assembly jig, a conveyor belt, or a large part the robot is working on.
+    \item \textbf{Why is it important?} All target points that we command the robot to reach must ultimately be expressed in this coordinate system. It is the common language that allows the robot and the outside world to understand each other.
+\end{itemize}
+
+\subsection{Tool Frame and the Tool}
+The \term{Tool Frame} is a coordinate system rigidly attached to the flange (the mounting plate) of the manipulator's last joint. By itself, the flange rarely performs useful work. A work tool is attached to it.
+
+\begin{itemize}
+    \item \textbf{What is it?} It is any mechanical device mounted on the robot's flange. This could be a welding torch, a pneumatic gripper, a paint sprayer, a measuring probe, a camera, or any other work implement.
+    \item \textbf{Analogy:} If your arm is the manipulator, its flange is your wrist. The pencil you hold in your hand is the \textbf{Tool}.
+\end{itemize}
+
+\subsection{Tool Center Point (TCP)}
+The \term{Tool Center Point} (TCP) is the most important point for robot control. It is a conceptual, often virtual point whose position and orientation are the ultimate goal of any motion command.
+
+\begin{itemize}
+    \item \textbf{What is it?} It is the point on (or even off) the tool that directly performs the work.
+    \begin{itemize}
+        \item For a welding torch, the TCP is the tip of the electrode.
+        \item For a gripper, the TCP is the point between its "fingers" where the object should be.
+        \item For a paint sprayer, the TCP is the center of the nozzle from which the paint is sprayed.
+    \end{itemize}
+    \item \textbf{Why is it important?} When an operator or a program gives the command "move to point (X, Y, Z) with orientation (A, B, C)," it always means: "place the Tool Center Point (TCP) at the specified position and give it the specified orientation relative to the active Base Frame."
+\end{itemize}
+
+\begin{tipbox}{Critical Distinction between Tool and TCP}
+The difference between the Tool and the TCP is critically important. The \textbf{Tool} is a physical object with mass, inertia, and dimensions. The \textbf{TCP} is a geometric, often weightless, point that serves as the target for the control system. Describing the Tool is, in essence, describing the offset (the transformation) from the robot's flange to this target point (the TCP). An inaccurate calibration of this offset is one of the most common sources of positioning errors.
+\end{tipbox}
+
+A clear definition and precise calibration of these three entities—Base, Tool, and TCP—are an absolute necessity for any meaningful work with an industrial robot. In the following sections, we will see how these concepts are described in the language of mathematics.
+
+\section{The Hierarchy of Frames: A Robot's Worldview}
+
+We have learned to describe the robot's key points, but relative to what? The answer to this question is at the core of all spatial logic in robotics. Any coordinate is only meaningful when we know in which \textbf{coordinate system}, or \term{frame}, it is defined.
+
+In industrial robotics, we never work with a single coordinate system. A real production cell is a complex world where multiple objects coexist: the robot itself, a workbench, a conveyor, parts, tools, and cameras. To work meaningfully in this world, the control system must operate with a whole hierarchy of interconnected frames.
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a detailed diagram of a robotic cell
+        \begin{infobox}{Typical Hierarchy of Coordinate Frames in a Robotic Cell}
+        A detailed illustration of a robot on the factory floor next to a workbench holding a part. The robot has a gripper and a camera attached. Arrows and labels indicate the key frames:
+        \begin{itemize}
+            \item \textbf{World Frame:} Located at a fixed corner of the cell, the "global zero."
+            \item \textbf{Base Frame:} At the base of the robot.
+            \item \textbf{User Frame:} Attached to the corner of the part on the workbench.
+            \item \textbf{Tool Frame:} At the robot's flange.
+            \item \textbf{TCP:} At the tip of the gripper.
+            \item \textbf{Sensor Frame:} On the camera.
+        \end{itemize}
+        Arrows show the hierarchical relationships: World $\rightarrow$ Base, Base $\rightarrow$ Tool, etc.
+    \end{infobox}
+    \caption{A typical hierarchy of coordinate systems (frames) in an industrial robotic cell. The ability to transform coordinates between these frames is fundamental.}
+    \label{fig:frame_hierarchy}
+\end{figure}
+
+Let's examine the primary frames used in a typical robotic cell:
+
+\begin{enumerate}
+    \item \textbf{World Frame:} This is the global, stationary, "absolute" coordinate system for the entire robotic cell. It serves as the common origin for all equipment. Its purpose is to link all objects in the cell (multiple robots, conveyors, tables) to a single origin, which is especially important in complex production lines.
+
+    \item \textbf{Base Frame:} This is the frame rigidly attached to the base of the robot itself, which we have already discussed. For a single robot, its `Base Frame` is often treated as the main one, but in multi-robot systems, its position is always known relative to the `World Frame`.
+
+    \item \textbf{User Frame:} This is one of the most powerful tools for simplifying programming. A `User Frame` is a coordinate system that an engineer can "attach" to any object in the workspace: a part, the corner of a table, or an assembly jig. Its purpose is to allow programming robot movements relative to the part, not the robot. For example, if a metal plate shifts slightly, instead of re-teaching all 10 drilling points on it, you only need to re-teach the three points defining the plate's `User Frame`, and all 10 programmed points are automatically recalculated.
+
+    \item \textbf{Tool Frame and TCP:} We have already covered these. It is important to remember that the `Tool Frame` moves with the robot, and its position is constantly changing relative to the `Base Frame`.
+\end{enumerate}
+
+\begin{principlebox}{The Power of Modern Robotics}
+The entire power of modern robotics lies in the ability to work with this hierarchy of frames. The controller's job is to constantly track the relative positions of all these coordinate systems and to be able to instantly transform points from any one frame to any other.
+\end{principlebox}
+
+Now that we understand the "what" (the hierarchy of frames), we can explore the "how": the mathematical tools used to describe the relationship between them.
+
+\section{Describing Pose: Position and Orientation in 3D}
+
+We have established that the robot's goal is to deliver the TCP to a specific point in space. Describing the \textbf{position} of this point is straightforward—it's a vector of three coordinates $(X, Y, Z)$ in a chosen frame of reference.
+
+A far more interesting and complex task is to describe the \textbf{orientation} of the tool. There are several ways to specify "which way" an object is pointing in three-dimensional space, and the choice of a particular method has a profound impact on both the complexity of mathematical transformations and the ease of use and interpretation by humans.
+
+In the following sections, we will examine the three main approaches used in robotics: rotation matrices, Euler angles, and quaternions.
+
+\subsection{Rotation Matrices: Rigorous Mathematics}
+\label{sec:rotation_matrix}
+
+A \term{Rotation Matrix} is the most fundamental, mathematically rigorous, and powerful method for describing the orientation of one object relative to another.
+
+\paragraph{Physical Meaning: Where Do the Axes Point?}
+Imagine two coordinate systems: a stationary base system (let's call it \textit{Base}) and a coordinate system rigidly attached to the robot's tool (\textit{Tool}). Each has its own axes: $(X_{base}, Y_{base}, Z_{base})$ and $(X_{tool}, Y_{tool}, Z_{tool})$.
+
+A rotation matrix is, in essence, a table (with a size of 3x3) that answers the question: "How are the axes of the \textit{Tool} system expressed in terms of the axes of the \textit{Base} system?" Each column of this matrix is nothing more than the coordinates of a unit vector of one of the \textit{Tool}'s axes, but written in the \textit{Base} coordinate system.
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram showing two coordinate frames
+    \begin{infobox}{The Physical Meaning of a Rotation Matrix}
+        An illustration of two coordinate systems, Base (X,Y,Z) and a rotated system Tool (X',Y',Z'). The vector X' of the Tool frame is shown with its projections onto the X, Y, and Z axes of the Base frame. These projections (r11, r21, r31) form the first column of the rotation matrix. The same logic applies to the Y' and Z' vectors.
+    \end{infobox}
+    \caption{The physical meaning of a rotation matrix: its columns are the basis vectors of the rotated coordinate system, expressed in the original system's coordinates.}
+    \label{fig:rotation_matrix_meaning}
+\end{figure}
+
+Mathematically, if we have a vector $\vec{p}_{tool}$ defined in the local coordinate system of the tool, we can find its representation in the base coordinate system, $\vec{p}_{base}$, by a simple multiplication with the rotation matrix $R$:
+$$ \vec{p}_{base} = R \cdot \vec{p}_{tool} $$
+Thus, a rotation matrix is an operator that "translates" vectors from one coordinate system to another, which is rotated relative to the first.
+
+\paragraph{Mathematical Properties}
+Not just any 3x3 matrix is a rotation matrix. To be one, it must possess two strict properties:
+\begin{enumerate}
+    \item \textbf{Orthogonality.} All of its columns (and rows) must be unit vectors and mutually perpendicular (orthogonal) to each other. This guarantees that the transformation preserves the lengths of vectors and the angles between them, meaning it is a "pure" rotation without any distortion or scaling. Mathematically, this means its transpose is equal to its inverse: $R^T = R^{-1}$. This property is incredibly convenient in practice, as finding the inverse rotation can be done with the simple and fast operation of transposition, rather than the complex computation of a matrix inverse.
+    \item \textbf{Determinant equal to +1.} This property ensures that the coordinate system is not "turned inside out" (it doesn't become a left-handed system instead of a right-handed one). The transformation preserves the orientation of space.
+\end{enumerate}
+
+\paragraph{Advantages and Disadvantages}
+Rotation matrices are widely used for internal calculations in controllers, in kinematics, and for composing transformations due to their significant strengths.
+
+\begin{table}[h!]
+    \caption{Analysis of Using Rotation Matrices}
+    \label{tab:rotation_matrix_analysis}
+    \centering
+    % Increase row spacing
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{p{0.2\linewidth} p{0.7\linewidth}} % No vertical lines, column widths adjusted to fit \linewidth
+        \toprule % Thick line before the first row (header)
+        \textbf{Aspect} & \textbf{Description} \\
+        \toprule % Thick line immediately under the header row
+        \textbf{Advantages} &
+        \vspace{-20pt} % Add vspace before the list
+        \begin{enumerate}
+            \item \textbf{Unambiguous and Rigorous:} A rotation matrix uniquely describes any possible orientation in 3D space. There are no ambiguities or special cases.
+            \item \textbf{No Singularities:} Unlike Euler angles, rotation matrices do not have "gimbal lock" or other configurations where the description of orientation becomes degenerate.
+            \item \textbf{Ease of Composition:} If we have a rotation $R_1$ followed by a rotation $R_2$, the total rotation is simply the matrix product $R_{total} = R_2 \cdot R_1$. This makes them ideal for sequential transformations.
+        \end{enumerate}
+        \vspace{-20pt} % Add vspace after the list
+        \\
+        \midrule % Thin line between data rows
+        \textbf{Disadvantages} &
+        \vspace{-18pt} % Add vspace before the list
+        \begin{enumerate}
+            \item \textbf{Redundancy:} To describe an orientation, which has only 3 degrees of freedom (e.g., three independent rotations), we use 9 numbers. These numbers are not independent and are constrained by strict orthogonality conditions. This complicates storage and manual input.
+            \item \textbf{Non-intuitive for Humans:} Looking at a matrix of 9 numbers, a human cannot intuitively visualize how the object is oriented. The set `[0.707, -0.707, 0; 0.707, 0.707, 0; 0, 0, 1]` tells an operator very little without additional calculations.
+            \item \textbf{Complex Interpolation:} A simple linear interpolation of each of the 9 matrix elements between two orientations will not result in a valid rotation matrix at the intermediate points. The path of rotation will be unnatural and distorted.
+        \end{enumerate}
+        \vspace{-20pt} % Add vspace after the list
+        \\
+        \bottomrule % Thick line at the very end of the table
+    \end{tabular}
+\end{table}
+
+\begin{tipbox}{Workhorse of the Controller}
+\term{Rotation Matrices} are the "workhorses" for the internal calculations of a controller. They are indispensable where mathematical rigor and predictability are paramount, for example, in the calculation of direct and inverse kinematics. However, for interaction with humans and for smooth trajectory interpolation, other, more suitable methods are used, which we will discuss next.
+\end{tipbox}
+
+\subsection{Euler Angles (RPY): Intuition and Pitfalls}
+\label{sec:euler_angles}
+
+If rotation matrices are the strict language for the machine, then \term{Euler Angles} are the intuitive language for the human. This is perhaps the most common method for describing orientation in robotics, aviation, and 3D graphics when it comes to user interaction.
+
+\paragraph{The Method: Three Consecutive Rotations}
+The idea is simple: any complex orientation in space can be achieved by performing three consecutive rotations around the axes of a coordinate system. The most well-known convention is **RPY (Roll, Pitch, Yaw)**:
+\begin{itemize}
+    \item \textbf{Roll:} Rotation around the X-axis.
+    \item \textbf{Pitch:} Rotation around the Y-axis.
+    \item \textbf{Yaw:} Rotation around the Z-axis.
+\end{itemize}
+
+\begin{dangerbox}{CRITICAL: Order Matters!}
+The final orientation is critically dependent on the sequence in which the rotations are performed. A rotation first around X and then around Z is not the same as a rotation first around Z and then around X. Therefore, in any system that uses Euler angles, the convention (the order of axes, e.g., Z-Y-X or X-Y-Z) must be strictly defined and documented.
+\end{dangerbox}
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram of a cube/airplane with Roll, Pitch, Yaw axes
+    \begin{tcolorbox}{Euler Angles in the RPY Convention}
+        An image of an object (e.g., an airplane or a cube) with the three axes (X, Y, Z) passing through its center. Around each axis, a curved arrow indicates the direction of rotation, labeled: Roll (around X), Pitch (around Y), Yaw (around Z).
+    \end{tcolorbox}
+    \caption{Euler angles in the RPY (Roll, Pitch, Yaw) convention.}
+    \label{fig:rpy_angles}
+\end{figure}
+
+Thanks to their visual clarity, Euler angles are the de-facto standard for displaying orientation on robot teach pendants and in graphical user interfaces. It is much easier for an operator to understand "rotate 10 degrees in yaw" than to interpret a 9-element matrix.
+
+\paragraph{The Pitfalls: Why Euler Angles are Dangerous}
+Behind their external simplicity and intuitiveness lie three serious mathematical problems that make Euler angles very inconvenient and even dangerous for internal calculations within a controller.
+
+\begin{enumerate}
+    \item \textbf{Gimbal Lock:} This is the most famous and insidious drawback. \term{Gimbal Lock} is not a mechanical failure but a fundamental mathematical property of this representation. It occurs in certain configurations when the axes of two of the three rotations align.
+    
+    For a standard Z-Y-X convention, if we rotate the object by 90 degrees around the Y-axis (pitch), its local Z-axis will align with the original X-axis. As a result, a subsequent rotation around Z (yaw) will produce the same result as the initial rotation around X (roll). \textbf{We lose one degree of rotational freedom.} The robot cannot perform a pure yaw; any such rotation will look like a roll. It gets "stuck" in this configuration.
+
+    \item \textbf{Ambiguity of Representation:} The same physical orientation can correspond to several different sets of Euler angles. For example, a rotation of +180 degrees and -180 degrees yield the same result. A more complex case: the orientation (Roll=0, Pitch=90, Yaw=0) is equivalent to (Roll=45, Pitch=90, Yaw=-45) in certain conventions. This ambiguity can cause problems in planning and optimization algorithms.
+
+    \item \textbf{Problems with Interpolation:} A simple linear interpolation of each of the three angles from a start orientation to an end orientation almost never produces the desired result. The TCP will move along a strange, long, and unnatural arc instead of the shortest path, and its rotational speed will be non-uniform. If the interpolation path crosses a point of gimbal lock, the behavior becomes completely unpredictable.
+\end{enumerate}
+
+\begin{dangerbox}{DANGER: A Mathematical Pitfall}
+\term{Gimbal Lock} is not a firmware bug; it is a property of the mathematics. If a controller tries to plan a path through a singularity point, it can lead to unpredictable, jerky, and very rapid rotations of individual robot joints as the system struggles to reach a target while having lost a control instrument.
+\end{dangerbox}
+
+\renewcommand{\arraystretch}{1.2} % Increase row spacing
+\begin{longtable}{p{0.2\linewidth} p{0.7\linewidth}}
+    \caption{Analysis of Using Euler Angles (RPY)}\label{tab:euler_angles_analysis}\\
+    \toprule % Thick line before the first row (header)
+    \textbf{Aspect} & \textbf{Description} \\
+    \toprule % Thick line immediately under the header row
+    \endfirsthead
+
+    \multicolumn{2}{c}{\tablename~\thetable{} -- continued from previous page} \\
+    \toprule % Thick line for continued header
+    \textbf{Aspect} & \textbf{Description} \\
+    \toprule % Thick line for continued header
+    \endhead
+
+    \bottomrule % Thick line at the very end of the table
+    \endfoot
+
+    \bottomrule % Thick line for the last page of the table
+    \endlastfoot
+
+    % Table Content
+    \textbf{Advantages} &
+    \vspace{-20pt} % Add vspace before the list
+    \begin{enumerate}
+        \item \textbf{Intuitive:} Easily understood and interpreted by humans. An operator can simply issue a command like "pitch down by 20 degrees."
+        \item \textbf{Compact:} Only 3 numbers are needed to describe an orientation, unlike the 9 for a rotation matrix.
+    \end{enumerate}
+    \vspace{-20pt} % Add vspace after the list
+    \\
+    \midrule % Thin line between data rows
+    \textbf{Disadvantages} &
+    \vspace{-20pt} % Add vspace before the list
+    \begin{enumerate}
+        \item \textbf{Gimbal Lock:} The existence of singular configurations where a degree of freedom is lost.
+        \item \textbf{Ambiguity:} Several sets of angles can describe the same orientation.
+        \item \textbf{Poor Interpolation:} Linear interpolation of angles leads to unnatural and non-optimal rotation paths.
+    \end{enumerate}
+    \vspace{-20pt} % Add vspace after the list
+    \\
+    \midrule % Thin line between data rows
+    \textbf{Primary Use Case} &
+    \vspace{-20pt} % Add vspace before the list
+    \begin{enumerate}
+        \item \textbf{Display and Input:} Displaying orientation data on a teach pendant or in a GUI; manual command input by an operator.
+        \item \textbf{NOT Recommended:} For internal trajectory calculations, composition of rotations, or any other mathematical operations inside the controller.
+    \end{enumerate}
+    \vspace{-20pt} % Add vspace after the list
+    \\
+\end{longtable}
+
+
+
+\paragraph{Analysis: The Niche for Euler Angles}
+Despite their serious drawbacks, Euler angles have their own indispensable niche.
+
+
+\subsection{Quaternions: Smooth Interpolation without Locks}
+\label{sec:quaternions}
+
+We have seen that rotation matrices are redundant and non-intuitive, while Euler angles suffer from singularities and interpolate poorly. This is where \term{Quaternions} enter the scene—a powerful and elegant mathematical tool that has become the de-facto standard for working with orientations in modern 3D graphics, robotics, and the aerospace industry.
+
+\paragraph{What is a Quaternion for an Engineer?}
+Without delving into the theory of complex numbers, a quaternion can be thought of as a smarter way to encode rotation based on the "axis-angle" principle. Any rotation in 3D space can be described by a vector defining the axis of rotation and an angle by which to turn around that axis. A quaternion does the same, but in a form more convenient for calculations.
+
+It is represented by four numbers $(x, y, z, w)$, where the first three components $(x, y, z)$ are related to the axis of rotation, and the fourth, the scalar component $w$, is related to the angle of rotation. These four numbers are linked by the condition of unit length (norm): $x^2 + y^2 + z^2 + w^2 = 1$.
+
+\begin{tipbox}{"Black Box" Approach}
+Do not try to intuitively "understand" a quaternion by looking at its four components as you would with Euler angles. Treat it as a "black box" or a mathematical object that possesses extremely useful properties. Its power lies not in its visual clarity, but in its computational efficiency and mathematical beauty.
+\end{tipbox}
+
+\paragraph{Solving the Problems of Euler Angles}
+Quaternions elegantly solve the main problems we discussed earlier:
+\begin{itemize}
+    \item \textbf{No Gimbal Lock:} Representing rotation with quaternions has no singular points. There is no orientation where the system loses a degree of freedom. This makes them absolutely reliable for any calculation.
+    \item \textbf{Unambiguous (Almost):} Each orientation in space corresponds to exactly two quaternions ($q$ and $-q$), which represent the same rotation. This predictable duality is easily handled in algorithms.
+\end{itemize}
+
+\paragraph{The Main Advantage: SLERP}
+But the main advantage of quaternions, which makes them indispensable, is the ability to perform smooth and correct interpolation. For this, an algorithm called \term{SLERP} (Spherical Linear Interpolation) is used.
+
+Imagine all possible orientations as points on the surface of a four-dimensional sphere. SLERP finds the shortest path between two points (two orientations) along the arc of this sphere.
+
+\newpage
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram illustrating SLERP
+    \begin{infobox}{ An illustration of the SLERP algorithm.}
+        An illustration of the SLERP algorithm. A sphere is drawn. On it are two points, $q_1$ and $q_2$. Two paths are shown between them: a straight line through the sphere (a chord), labeled "Linear Interpolation (LERP) - The Wrong Path", and an arc on the surface of the sphere, labeled "Spherical Linear Interpolation (SLERP) - The Correct, Shortest Path".
+        An illustration of the SLERP algorithm.
+    \end{infobox}
+    \caption{SLERP ensures smooth interpolation along the shortest arc on the sphere of orientations.}
+    \label{fig:slerp_interpolation}
+\end{figure}
+
+The result of such a movement is:
+\begin{itemize}
+    \item \textbf{Optimal Rotation Path:} The robot rotates the tool along the shortest possible arc.
+    \item \textbf{Constant Rotational Speed:} If the interpolation parameter changes linearly, the angular velocity of the TCP will be constant.
+\end{itemize}
+
+
+
+\begin{tipbox}{Gold Standard}
+SLERP is the gold standard for smooth animation and the generation of rotational trajectories. If you need to move a robot from one orientation to another as smoothly and predictably as possible, you must use quaternions and SLERP.
+\end{tipbox}
+
+
+\renewcommand{\arraystretch}{1.2} % Increase row spacing
+\begin{longtable}{p{0.25\linewidth} p{0.75\linewidth}}
+    \caption{Analysis of Using Quaternions}\label{tab:quaternion_analysis}\\
+    \toprule % Thick line before the first row (header)
+    \textbf{Aspect} & \textbf{Description} \\
+    \toprule % Thick line immediately under the header row
+    \endfirsthead
+
+    \multicolumn{2}{c}{\tablename~\thetable{} -- continued from previous page} \\
+    \toprule % Thick line for continued header
+    \textbf{Aspect} & \textbf{Description} \\
+    \toprule % Thick line for continued header
+    \endhead
+
+    \bottomrule % Thick line at the very end of the table
+    \endfoot
+
+    \bottomrule % Thick line for the last page of the table
+    \endlastfoot
+
+    % Table Content
+    \textbf{Advantages} &
+    \vspace{-20pt}
+    \begin{enumerate}
+        \item \textbf{Excellent Interpolation (SLERP):} Provides the mathematically shortest, smoothest, and most natural rotational path between two orientations. This is their killer feature.
+        \item \textbf{No Singularities:} Completely avoids the problem of Gimbal Lock, making them robust for all calculations and orientations.
+        \item \textbf{Computationally Efficient:} Composition of rotations (via quaternion multiplication) is faster than matrix multiplication. More compact storage (4 numbers) than matrices (9 numbers).
+        \item \textbf{Unambiguous (Almost):} Avoids the multiple-angle ambiguity of Euler angles. The $q$ vs. $-q$ duality is predictable and easily handled.
+    \end{enumerate}
+    \vspace{-20pt}
+    \\
+    \midrule
+    \textbf{Disadvantages} &
+    \vspace{-20pt}
+    \begin{enumerate}
+        \item \textbf{Non-intuitive for Humans:} It is nearly impossible to mentally visualize an orientation from the four components of a quaternion. They are not suitable for direct display or manual input.
+        \item \textbf{Slight Redundancy:} Uses 4 numbers to represent 3 degrees of freedom, requiring a unit-norm constraint.
+    \end{enumerate}
+    \vspace{-20pt}
+    \\
+    \midrule
+    \textbf{Primary Use Case} &
+    \vspace{-20pt}
+    \begin{enumerate}
+        \item \textbf{Trajectory Interpolation:} The "gold standard" for generating smooth rotational motion in robotics and 3D graphics.
+        \item \textbf{Internal Representation:} Used inside the controller for storing orientations and performing calculations where singularities must be avoided.
+    \end{enumerate}
+    \vspace{-20pt}
+    \\
+\end{longtable}
+
+
+\paragraph{Analysis: The Inner Strength of the Controller}
+Quaternions are the ideal compromise between the redundant matrices and the problematic Euler angles. They combine mathematical rigor with computational efficiency, making them the preferred tool for internal controller operations involving orientation.
+
+\subsection{Summary: A Comparative Guide to Orientation Formats}
+We have reviewed three fundamentally different approaches to describing orientation in space. Each has its strengths, weaknesses, areas of application, and pitfalls. The choice of a specific format is always an engineering trade-off between mathematical rigor, computational efficiency, and human intuitiveness.
+
+To bring it all together, let's compare these three methods based on key characteristics.
+
+\renewcommand{\arraystretch}{1.2} % Increase row spacing
+\begin{longtable}{p{0.16\linewidth} p{0.23\linewidth} p{0.23\linewidth} p{0.23\linewidth}}
+    \caption{Overall Comparison of Orientation Representation Formats}\label{tab:orientation_format_comparison}\\
+    \toprule % Thick line before the first row (header)
+    \textbf{Criterion} & \textbf{Rotation Matrix (3x3)} & \textbf{Euler Angles (RPY)} & \textbf{Quaternions} \\
+    \toprule % Thick line immediately under the header row
+    \endfirsthead
+
+    \multicolumn{4}{c}{\tablename~\thetable{} -- continued from previous page} \\
+    \toprule % Thick line for continued header
+    \textbf{Criterion} & \textbf{Rotation Matrix (3x3)} & \textbf{Euler Angles (RPY)} & \textbf{Quaternions} \\
+    \toprule % Thick line for continued header
+    \endhead
+
+    \bottomrule % Thick line at the very end of the table
+    \endfoot
+
+    \bottomrule % Thick line for the last page of the table
+    \endlastfoot
+
+    % Table Content
+    \textbf{Dimensionality} & 9 numbers (redundant) & 3 numbers (minimal) & 4 numbers (near-minimal) \\
+    \midrule % Thin line between data rows
+    \textbf{Intuitiveness} & Low. Difficult for humans to interpret. & High. Easy to understand and specify manually. & Low. Requires mathematical background to understand. \\
+    \midrule % Thin line between data rows
+    \textbf{Singularities (Gimbal Lock)} & None. Absolutely robust format. & Yes. A fundamental flaw, making them dangerous for calculations. & None. Completely resolves the gimbal lock problem. \\
+    \midrule % Thin line between data rows
+    \textbf{Interpolation} & Complex. Simple linear blending does not work. & Very poor. Leads to unnatural and non-optimal paths. & Excellent. The SLERP algorithm provides a smooth and shortest rotation path. \\
+    \midrule % Thin line between data rows
+    \textbf{Composition (Chaining Rotations)} & Very simple and efficient (matrix multiplication). & Complex and non-intuitive. Requires conversion to matrices or quaternions. & Simple and very efficient (quaternion multiplication). \\
+    \midrule % Thin line between data rows
+    \textbf{Mathematical Rigor} & High. Clear mathematical properties. & Moderate. Plagued by conventions and ambiguities. & High. A rigorous and elegant mathematical tool. \\
+    \midrule % Thin line between data rows
+    \textbf{Primary Use Case} & Fundamental calculations in kinematics; internal representation of transforms. & Displaying data in GUIs; manual command input by operators. & Interpolation of trajectories; simulations; storage of orientation in 3D engines. \\
+\end{longtable}
+
+\begin{navigationbox}{The Right Tool for the Job}
+There is no "best" format—there is only the right tool for the task. A modern robot control system does not use just one format. It pragmatically uses all three, switching between them depending on the context:
+\begin{itemize}
+    \item \textbf{Inside the mathematical core} and for kinematic calculations, everything is represented as transformation matrices for rigor.
+    \item \textbf{When planning a smooth rotation} from one orientation to another, the system uses quaternions and SLERP.
+    \item \textbf{When displaying the orientation to an operator} on the teach pendant or receiving a command from them, the system converts the internal data into understandable Euler angles.
+\end{itemize}
+The ability to correctly transform data between these formats is a key skill for a robotics engineer.
+\end{navigationbox}
+
+This concludes our discussion of orientation representation. Now that we understand how to describe the final goal, we can move on to the next important question: how to relate this goal to the robot's global world and its working environment. To do this, we need to talk about coordinate systems and their transformations.
+
+\section{Homogeneous Transformations: The Unified Tool}
+\label{sec:homogeneous_transforms}
+
+We have established that a robotic cell contains a whole hierarchy of coordinate systems. Now we face a key mathematical challenge: how to describe the transformation from one frame to another?
+
+From the previous sections, we know that the orientation of one frame relative to another is described by a rotation matrix $R$ (3x3). And the displacement of the origin of one frame relative to another is simply a translation vector $\vec{d}$ (3x1).
+
+\paragraph{The Problem: How to Combine Rotation and Translation?}
+It seems we have everything we need. To transform a point $\vec{p}_B$ from frame B to frame A, we can first rotate it and then add the translation vector:
+$$ \vec{p}_A = R \cdot \vec{p}_B + \vec{d} $$
+This formula is absolutely correct. However, it has a huge drawback: it is not a linear transformation. The presence of the addition $(\dots + \vec{d})$ makes it cumbersome, especially when we need to perform a whole chain of transformations (e.g., from TCP to World through Tool and Base). Each such transformation would be a pair (matrix, vector), and their composition becomes very complex.
+
+Engineers and mathematicians needed a way to express both rotation and translation in a single matrix multiplication operation.
+
+\paragraph{The Solution: The Magic of the Fourth Dimension}
+The solution found was both elegant and ingenious. It involves a small mathematical "trick": we move into what are called \term{homogeneous coordinates}. We simply add a fourth, fictitious coordinate, equal to 1, to each of our three-dimensional vectors.
+
+$$ \vec{p} = \begin{pmatrix} x \\ y \\ z \end{pmatrix} \quad \rightarrow \quad \vec{p}_{hom} = \begin{pmatrix} x \\ y \\ z \\ 1 \end{pmatrix} $$
+
+This transition into 4D space now allows us to describe the complete transformation (both rotation and translation) using a single 4x4 matrix, which is called the \term{Homogeneous Transformation Matrix}.
+
+\begin{figure}[h!]
+    \centering
+    \begin{infobox}{Structure of a 4x4 Homogeneous Transformation Matrix}
+        A visual representation of a 4x4 matrix, partitioned into blocks:
+        \[
+        T = \left[
+        \begin{array}{ccc|c}
+        \multicolumn{3}{c|}{\text{Rotation Matrix } R} & \text{Translation Vector } \vec{d} \\
+        \multicolumn{3}{c|}{\text{(3x3)}} & \text{(3x1)} \\
+        \hline
+        0 & 0 & 0 & 1
+        \end{array}
+        \right]
+        \]
+        The bottom row is labeled as [Perspective Transformation (zeros here) | Scaling Factor].
+    \end{infobox}
+    \caption{The structure of a 4x4 homogeneous transformation matrix elegantly combines rotation and translation information.}
+    \label{fig:homogeneous_matrix_structure}
+\end{figure}
+
+As seen in Figure \ref{fig:homogeneous_matrix_structure}, this matrix elegantly combines all the necessary information:
+\begin{itemize}
+    \item Now, our formula for transforming a point from frame B to frame A becomes incredibly simple and elegant:
+    $$ \vec{p}_{A, hom} = T_{A \leftarrow B} \cdot \vec{p}_{B, hom} $$
+    Where $T_{A \leftarrow B}$ is the 4x4 transformation matrix that describes the pose of frame B relative to frame A. We have reduced two operations (rotation and addition) to a single matrix multiplication!
+\end{itemize}
+
+\begin{tipbox}{Fundamental "Atom" of Robotics}
+The 4x4 \term{Homogeneous Transformation Matrix} is the fundamental "atom" of spatial mathematics in robotics. Any relative pose of two frames, any robot pose, any tool offset—all of this is represented inside the controller by exactly these matrices. Mastering them is key to understanding robot kinematics.
+\end{tipbox}
+
+\subsection{Composition and Inversion of Transformations}
+The main superpower of homogeneous transformation matrices lies in how easily they handle two fundamental operations: \textbf{composition} and \textbf{inversion}. It is these two operations that allow us to freely navigate the entire hierarchy of coordinate systems.
+
+\paragraph{Composition: Building a Chain of Transformations}
+\term{Composition} is the process of combining several sequential transformations into a single one. If we have a transformation from frame C to frame B ($T_{B \leftarrow C}$), and then from frame B to frame A ($T_{A \leftarrow B}$), we can find the direct transformation from C to A by simply multiplying their matrices.
+
+\begin{dangerbox}{CRITICAL: The Order of Multiplication}
+The rule for composition is: $T_{A \leftarrow C} = T_{A \leftarrow B} \cdot T_{B \leftarrow C}$.
+Pay close attention to the order of multiplication! It proceeds "from right to left" along the transformation chain. To get the final matrix, we first apply the transformation from C to B, and then we transform the result from B to A.
+\end{dangerbox}
+
+\paragraph{Practical Example: Finding the TCP in World Coordinates}
+This is the most common task in robotics. We have a frame hierarchy: `World` $\rightarrow$ `Base` $\rightarrow$ `Tool` $\rightarrow$ `TCP`. We know the transformations between adjacent frames:
+\begin{itemize}
+    \item $T_{World \leftarrow Base}$: The position of the robot in the world (often just an offset in height if the robot is on a pedestal).
+    \item $T_{Base \leftarrow Tool}$: The current pose of the robot, the result of solving the forward kinematics. It describes the position of the flange ('Tool') relative to the base ('Base').
+    \item $T_{Tool \leftarrow TCP}$: The offset of the TCP relative to the flange, which is defined during tool calibration.
+\end{itemize}
+To find the final position of the TCP in the world coordinate system, we simply need to multiply these matrices in the correct order:
+$$ T_{World \leftarrow TCP} = T_{World \leftarrow Base} \cdot T_{Base \leftarrow Tool} \cdot T_{Tool \leftarrow TCP} $$
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a block diagram of the transformation chain
+    \begin{tcolorbox}[width=\textwidth, halign=center, title=Composition of Transformations to Find TCP Pose]
+        A block diagram illustrating the transformation chain. Four blocks: World, Base, Tool, TCP. Arrows point from right to left between them, labeled with the corresponding matrices: $T_{World \leftarrow Base}$, $T_{Base \leftarrow Tool}$, $T_{Tool \leftarrow TCP}$. A single long arrow below points from TCP all the way to World, labeled as the final matrix $T_{World \leftarrow TCP}$, which is the product of the three above.
+    \end{tcolorbox}
+    \caption{Composition of transformations for finding the TCP position in the world coordinate system.}
+    \label{fig:tcp_composition}
+\end{figure}
+
+Thanks to 4x4 matrices, this complex spatial problem is solved by three sequential matrix multiplications. This is precisely the operation we will constantly use in our `FrameTransformer` module.
+
+\paragraph{Inversion: A View from the Other Side}
+\term{Inversion} is the operation that allows us to "reverse" a transformation. If the matrix $T_{A \leftarrow B}$ describes how frame B looks from frame A, then the inverse matrix, $T_{A \leftarrow B}^{-1}$, will describe how frame A looks from frame B.
+$$ T_{B \leftarrow A} = (T_{A \leftarrow B})^{-1} $$
+Calculating the inverse of a 4x4 matrix is a standard and computationally inexpensive operation, available in any math library.
+
+\paragraph{Practical Example: Finding Where the Robot Should Be}
+Let's imagine a task: we want a point on a part, defined in a `User` frame, to coincide with the `TCP` of our tool. In essence, we want the `TCP` frame and the `User` frame to be identical. Mathematically, this means:
+$$ T_{World \leftarrow User} = T_{World \leftarrow TCP} $$
+We know where the part is in the world ($T_{World \leftarrow User}$), and we know how the tool is attached to the robot ($T_{Tool \leftarrow TCP}$). We need to find the unknown—the robot's pose ($T_{Base \leftarrow Tool}$).
+
+Let's expand the right side of the equation:
+$$ T_{World \leftarrow TCP} = T_{World \leftarrow Base} \cdot T_{Base \leftarrow Tool} \cdot T_{Tool \leftarrow TCP} $$
+Now, to express the unknown matrix $T_{Base \leftarrow Tool}$, we need to "move" the other matrices to the left side using inversion:
+$$ T_{Base \leftarrow Tool} = (T_{World \leftarrow Base})^{-1} \cdot T_{World \leftarrow User} \cdot (T_{Tool \leftarrow TCP})^{-1} $$
+$$ T_{Base \leftarrow Tool} = T_{Base \leftarrow World} \cdot T_{World \leftarrow User} \cdot T_{TCP \leftarrow Tool} $$
+
+\begin{figure}[h!]
+    \centering
+    % Placeholder for a diagram showing matrix inversion
+    \begin{infobox}{Matrix Inversion Changes the Direction of Transformation}
+        A simple diagram. Two blocks: Frame A and Frame B. An arrow points from B to A, labeled $T_{A \leftarrow B}$. Below, the same two blocks, but the arrow points from A to B, labeled $T_{B \leftarrow A} = (T_{A \leftarrow B})^{-1}$.
+    \end{infobox}
+    \caption{Matrix inversion changes the direction of the transformation.}
+    \label{fig:matrix_inversion}
+\end{figure}
+
+With the help of composition and inversion, we can solve virtually any coordinate transformation problem by simply manipulating matrices as algebraic objects. This makes the code for spatial calculations incredibly elegant and powerful.

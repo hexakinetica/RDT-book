@@ -1,0 +1,127 @@
+% Part I: Philosophy and Principles of Systems Engineering
+\part{Philosophy and Principles of Systems Engineering}
+\pagestyle{github}
+
+% Chapter 1: A more informative and engaging title
+\chapter{From Idea to Product: An Introduction to the Engineering Approach}
+
+\begin{navigationbox}{In this chapter}
+    \begin{itemize}
+        \item Why experience from "university" or "hobby" projects is not always applicable in industry.
+        \item The fundamental difference between a prototype and a \term{production-ready} system.
+        \item The core criteria (reliability, safety, predictability) that an industrial control system must meet.
+        \item What RDT (Robot Development Toolkit) is—our book-long project that will serve as the proving ground for all concepts.
+    \end{itemize}
+\end{navigationbox}
+
+% Section 1.1: A stronger hook focusing on the mindset
+\section{From Prototype to Catastrophe... and Back}
+
+Most of the robots you see on YouTube would break down within an hour of operation on a real factory floor. This book is about why that is, and how to create a control system that \textit{won't} break.
+
+If you are already familiar with C++, ROS, or Simulink but feel you lack a deep understanding of how \textit{real} industrial systems are built, this book is for you. Perhaps you've even built your first robot that deftly moves its gripper on command. That's great! But if you feel that something more fundamental is missing—something that separates a cool prototype from an industrial system capable of running for years without failure—then this book is definitely for you.
+
+This book is less about \textit{how to write code} and more about \textit{how to think about architecture}, so that your code can survive for years in the harsh realities of industry. We are here to share our experience in creating systems that run 24/7, where the cost of an error is not measured in lab grade points, but in tens of thousands of dollars of production downtime. \textit{Very expensive}.
+
+% Section 1.2: Renamed for clarity
+\section{A Bridge Between Theory and Practice}
+
+This book is a guide for passionate engineers, graduate students, and anyone who wants to leap from "demo projects" running in ideal conditions to developing \term{production-ready} solutions.
+
+We have a deep respect for academic knowledge—it is the foundation. However, the real world imposes entirely different demands: reliability, safety, performance, and, critically, \term{maintainability}. These are the aspects often left behind in university courses.
+
+This book is designed to be that bridge. We don't just explain principles—we show them in a living implementation through our own control system. You will see modern C++ code (we use the C++17/20 standard), clear diagrams, and a breakdown of every architectural decision.
+
+Our approach is not to give you a ready-made recipe. Instead, we want to arm you with a \textbf{way of thinking}. A mindset that allows you to anticipate problems before they arise, to build resilience into your architecture, and to create systems that can be maintained and evolved tomorrow.
+
+% New section for better structure
+\section{The Core Difference: Prototype vs. Product}
+
+Before we dive into the details, let's clearly define what we mean by an "industrial" or "\term{production-ready}" system. What is this chasm that separates a lab bench setup from a production cell? The answer lies in the scale of responsibility and the price of failure.
+
+% В преамбуле вашего документа должны быть следующие строки:
+% \usepackage{booktabs}
+% \usepackage{caption}
+% \captionsetup{justification=raggedright, singlelinecheck=false}
+
+% В преамбуле вашего документа должны быть следующие строки:
+% \usepackage{booktabs}
+% \usepackage{caption}
+% \captionsetup{justification=raggedright, singlelinecheck=false}
+
+\begin{table}[h!]
+    \caption{Comparison of a Prototype and an Industrial Product}
+    \label{tab:prototype_vs_product}
+    \centering
+    % Увеличиваем интервал между строками
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{p{0.2\textwidth} p{0.35\textwidth} p{0.35\textwidth}}
+        \toprule
+        \textbf{Criterion} & \textbf{Prototype (Quick-and-Dirty)} & \textbf{Industrial Product} \\
+        \midrule
+        \textbf{Goal} & Demonstrate an idea; an impressive video for investors. & Reliable 24/7 operation; fulfilling a business need. \\
+        \textbf{Lifecycle} & A few days or weeks. & 10-15 years. \\
+        \textbf{Environment} & Ideal laboratory conditions. & A noisy, dusty factory floor with electromagnetic interference. \\
+        \textbf{Error Handling} & \texttt{printf("Error"); exit(1);} & Graceful degradation, operator notification, recovery procedures. \\
+        \textbf{Cost of Failure} & Restart the program. & Tens of thousands of dollars in downtime; a threat to safety. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Let's formulate the key requirements that distinguish an industrial system from a prototype. These are not mere suggestions—they are the laws that govern the industry.
+
+% Criteria are highlighted in a separate box for emphasis
+\begin{principlebox}{Criteria for a Production-Ready System}
+    \begin{description}
+        \item[Reliability:] The system is designed for continuous operation. Its logic is predictable, and its behavior is \term{deterministic}.
+        
+        \item[Safety:] No compromises. The system is governed by standards (e.g., ISO 10218, IEC 61508) and features multi-layered protection.
+        
+        \item[Performance \& Predictability:] Movements are not just fast, but guaranteed to be smooth. The control loop executes with strict periodicity.
+        
+        \item[Maintainability:] Code is written not for oneself, but for the team and for one's "future self." It is readable, well-structured, and easily extensible.
+        
+        \item[Diagnosability (\term{Observability}):] When something goes wrong (and it inevitably will), the system provides comprehensive information for rapid troubleshooting and correction.
+        
+        \item[Testability:] Every component of the system can be verified in isolation. Automated tests exist for each system level.
+    \end{description}
+\end{principlebox}
+
+This is why "just-make-it-work" approaches fail in industrial development. Everything here must be reliable, predictable, and precise. In this book, we will show how \term{Systems Engineering} and proper architecture enable the construction of such systems.
+
+% Section 1.4: Renamed and enhanced with the leitmotif diagram
+\section{Our Proving Ground: The Robot Development Toolkit (RDT) Project}
+
+Throughout this book, we will work together on creating and analyzing an industrial robot control system. This is not an abstract exercise, but a complete project we'll call the \textbf{RDT (Robot Development Toolkit)}. All source code is available in an open repository: \url{https://github.com/hexakinetica/rdt-core}.
+
+% The book's visual leitmotif
+\begin{figure}[h!]
+    \centering
+    \begin{tcolorbox}[width=\textwidth, halign=center, title=The Command Conveyor: From Click to Motion]
+        \texttt{[GUI] $\rightarrow$ [Adapter] $\rightarrow$ [Planner] $\rightarrow$ [RT-Core] $\rightarrow$ [HAL] $\rightarrow$ [Physics]}
+        \\ \vspace{0.2cm}
+        \texttt{[Feedback] $\xleftarrow{\text{State, Sensors}}$} \texttt{...[RT-Core]...}
+    \end{tcolorbox}
+    \caption{The general schematic of the "Command Conveyor"—the visual leitmotif of our book.}
+    \label{fig:command_pipeline_intro}
+\end{figure}
+
+This book-long project will allow us to:
+\begin{enumerate}
+    \item \textbf{Show architecture in action.} Every principle will be reflected in a specific RDT class or module.
+    
+    \item \textbf{Dissect engineering trade-offs.} We won't just show you the 'correct' code. We will explain \textit{why} it is the way it is, what the alternatives were, and what the 'cost' of each decision is.
+    
+    \item \textbf{Give you working code.} You will be able to download, compile, and run the entire project to get a hands-on feel for the architecture.
+    
+    \item \textbf{Journey along the 'Command Conveyor'.} We will trace how a single click in the GUI is transformed into coordinated motor movement, and how sensor data travels back to the screen.
+\end{enumerate}
+
+We will break down the logic behind the robot's behavior piece by piece. We are confident that this approach will provide you not only with a deep understanding but also with the practical tools to build real, "battle-hardened," and reliable systems.
+
+\vspace{1cm}
+\begin{center}
+    \textit{Ready to dive into the world of truly reliable robotics?}
+    
+    \textit{Then let's get started!}
+\end{center}

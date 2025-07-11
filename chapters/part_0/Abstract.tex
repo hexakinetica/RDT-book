@@ -1,0 +1,21 @@
+\newpage
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+\section*{Purpose} 
+This book details the design and implementation of a production-grade software architecture for industrial robot controllers. It bridges the gap between academic theory and real-world engineering by documenting the creation of the **Robot Development Toolkit (RDT)**, a complete, open-source controller built in modern C++.
+
+
+\section*{Methodology} 
+The architecture follows a Model-Based Design approach, centered on a strict separation of the real-time (RT) and non-real-time (NRT) domains. Key patterns, such as the lock-free "Command Conveyor" for RT/NRT communication and the "Single Source of Truth" (SSOT), are implemented and analyzed for their impact on determinism, reliability, and testability.
+
+
+\section*{Results} 
+A complete, end-to-end control system architecture is presented, tracing a command's full lifecycle from the GUI to the servo drive. The work includes the design and analysis of core modules: a trajectory planner, a deterministic RT-kernel, a flexible Hardware Abstraction Layer (HAL), and the open-source RDT controller itself, which serves as a reference implementation.
+
+
+\section*{Practical Significance} 
+This work provides both a field manual for engineers and a platform for education and research. The full source code for the RDT project and this book are openly available in two accompanying repositories, inviting community contribution and providing a tangible learning platform for modern industrial automation.
+
+\paragraph*{Keywords} 
+systems engineering, software architecture, industrial robotics, real-time systems (RTOS), robot controller, inverse kinematics (IK), trajectory planning, digital twin, C++, KDL, Eigen.

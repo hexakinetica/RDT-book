@@ -1,0 +1,49 @@
+\input{styles}
+
+% ================= DOCUMENT BEGIN =====================
+\begin{document}
+
+\justifying                          % Activate full justification
+
+
+\input{chapters/part_0/Titlepage}
+
+\input{chapters/part_0/Abstract}
+\input{chapters/part_0/Preface}
+
+\input{chapters/part_0/Gratitude}
+\input{chapters/part_0/Contributors}
+
+\tableofcontents
+\input{chapters/part_0/Draftnote}
+
+\input{chapters/part_1/1_Introduction}
+\input{chapters/part_1/1_5}
+\input{chapters/part_1/2_SysEng}
+\input{chapters/part_2/3_Transformation}
+\input{chapters/part_2/4_Kinematics}
+\input{chapters/part_3/5_Controllers}
+\input{chapters/part_3/6}
+\input{chapters/part_3/7}
+\input{chapters/part_3/8}
+\input{chapters/part_3/9}
+\input{chapters/part_4/10}
+\input{chapters/part_4/11}
+\input{chapters/part_4/12}
+\input{chapters/part_5/13_Conclusion}
+
+
+\appendix
+\part*{Appendix}
+\addcontentsline{toc}{part}{Appendix}
+\input{appendix/code_guide}
+% Figures and listings
+\listoffigures
+\addcontentsline{toc}{chapter}{Pictures list}
+%\listoflistings
+\addcontentsline{toc}{chapter}{Listnings list}
+
+% Bibliography
+\printbibliography
+
+\end{document}
